@@ -11,7 +11,7 @@ Aplicación web privada para subir documentos, buscar dentro de TXT, Word (.docx
 ## Despliegue recomendado
 
 1. Descomprimí el ZIP y subí el contenido de la carpeta al repositorio **privado** de GitHub; no subas solo el ZIP. En la raíz del repositorio deben quedar `docker-compose.yml`, `Dockerfile`, `server.js`, `package.json` y la carpeta `public`. Revisá que no haya documentos reales, `.env` ni credenciales.
-2. En Portainer, creá un Stack desde ese repositorio y elegí la misma rama donde están esos archivos. Si están directamente en la raíz, el Compose path es `docker-compose.yml`. Si subiste la carpeta contenedora completa, usá `Archivo IT Portainer/docker-compose.yml` como ruta. Portainer clona el repositorio y resuelve el Compose path desde su raíz.
+2. En Portainer, creá un Stack desde ese repositorio y elegí la misma rama donde están esos archivos. Si están directamente en la raíz, el Compose path es `docker-compose.yml`. Si subiste la carpeta contenedora completa, usá `Archivo IT Portainer corregido/docker-compose.yml` como ruta. Portainer clona el repositorio y resuelve el Compose path desde su raíz.
 3. En el apartado **Environment variables** del Stack definí:
    - `APP_USER`: tu usuario.
    - `APP_PASSWORD`: una contraseña aleatoria larga (mínimo 14 caracteres).
@@ -47,6 +47,7 @@ No subas archivos `.env`, `stack.env` ni credenciales al repositorio. `.gitignor
 ## Copias de seguridad
 
 Respaldá el volumen `archivo_it_data` desde el host o con la solución de backup de Docker que uses. Probá la restauración y guardá el backup cifrado. No agregues el contenido del volumen al repositorio.
+
 
 
 
