@@ -1,6 +1,6 @@
 # Archivo IT — despliegue con Portainer
 
-Aplicación web privada para subir documentos, buscar dentro de TXT, Word (.docx), Excel (.xlsx/.xlsm) y PDF, y abrir una vista previa desde la biblioteca. PDF se muestra en el navegador; texto, Word y Excel se presentan como texto extraído. KeePass, ZIP, RAR y DOC se descargan porque no tienen vista previa en la app. Los archivos se almacenan en el volumen persistente `archivo_it_data`, separado del código. El archivo KeePass se guarda como archivo y no se descifra ni se indexa.
+Aplicación web privada para subir documentos, buscar dentro de TXT, Word (.docx), Excel (.xlsx/.xlsm) y PDF, y abrir una vista previa desde la biblioteca. PDF se muestra en el navegador; texto, Word y Excel se presentan como texto extraído. También permite editar archivos de texto, CSV/TSV y planillas XLSX (edición básica de celdas; conviene conservar una copia para archivos con formatos complejos). Word, PDF, KeePass, ZIP y RAR se descargan para editarlos con su aplicación correspondiente. Los archivos se almacenan en el volumen persistente `archivo_it_data`, separado del código. El archivo KeePass se guarda como archivo y no se descifra ni se indexa.
 
 ## Contenido del paquete
 
@@ -47,5 +47,6 @@ No subas archivos `.env`, `stack.env` ni credenciales al repositorio. `.gitignor
 ## Copias de seguridad
 
 Respaldá el volumen `archivo_it_data` desde el host o con la solución de backup de Docker que uses. Probá la restauración y guardá el backup cifrado. No agregues el contenido del volumen al repositorio.
+
 
 

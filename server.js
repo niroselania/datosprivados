@@ -65,7 +65,7 @@ class JsonSessionStore extends session.Store {
 app.disable('x-powered-by');
 if (process.env.TRUST_PROXY === '1') app.set('trust proxy', 1);
 app.use(express.urlencoded({ extended: false, limit: '20kb' }));
-app.use(express.json({ limit: '20kb' }));
+app.use(express.json({ limit: '2mb' }));
 app.use(session({
   name: 'archivoit.sid', secret: SECRET, resave: false, saveUninitialized: false,
   store: new JsonSessionStore(),
@@ -180,11 +180,72 @@ app.get('/api/files', loggedIn, async (req, res) => {
     res.json({ files: result.map(x => {
       const i = q ? x.content.toLocaleLowerCase().indexOf(q) : -1;
       const snippet = x.type === 'Vault' ? 'Bóveda KeePass cifrada; no se indexa.' : i >= 0 ? x.content.slice(Math.max(0,i-65), i+q.length+105).replace(/\s+/g,' ') : '';
-      return { id:x.id, name:x.name, rel:x.rel, type:x.type, category:x.category, size:x.size, snippet, open:`/api/file/${x.id}` };
+      return { id:x.id, name:x.name, rel:x.rel, ext:x.ext, type:x.type, category:x.category, size:x.size, snippet, open:`/api/file/${x.id}` };
     }), categories:CATEGORIES, counts, stats:{ total:everything.length, topics:Object.values(counts).filter(Boolean).length, sheets:everything.filter(x => x.type === 'Excel').length, indexed:everything.filter(x => x.content).length } });
   } catch (e) { res.status(500).json({ error: 'No se pudo leer la biblioteca.' }); }
 });
-app.get('/api/preview/:id', loggedIn, async (req,res) => {
+const EDITABLE_TEXT = new Set(['txt','md','csv','tsv','log','ps1','bat','sh','yml','yaml','conf','ini','json','xml','sql','py','crt','pem']);
+function getCachedItem(id) { return [...cache.values()].find(x => x.id === id); }
+app.get('/api/edit/:id', loggedIn, async (req,res) => {
+  const item = getCachedItem(req.params.id);
+  if (!item || !item.abs.startsWith(DATA + path.sep)) return res.sendStatus(404);
+  if (EDITABLE_TEXT.has(item.ext)) {
+    const text = await fs.promises.readFile(item.abs, 'utf8');
+    if (text.length > 500000) return res.status(413).json({ error: 'El archivo supera el límite de edición de 500 KB.' });
+    return res.json({ kind: 'text', name: item.name, text });
+  }
+  if (item.ext === 'xlsx') {
+    const wb = XLSX.readFile(item.abs, { cellDates: true });
+    const sheets = wb.SheetNames.map(name => {
+      const ws = wb.Sheets[name];
+      const range = ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']) : { s:{r:0,c:0}, e:{r:0,c:0} };
+      const rows = [];
+      for (let r = range.s.r; r <= Math.min(range.e.r, range.s.r + 99); r++) {
+        const row = [];
+        for (let c = range.s.c; c <= Math.min(range.e.c, range.s.c + 19); c++) {
+          const cell = ws[XLSX.utils.encode_cell({r,c})];
+          row.push(cell ? String(cell.w ?? cell.v ?? '') : '');
+        }
+        rows.push(row);
+      }
+      return { name, startRow:range.s.r, startCol:range.s.c, rows, truncated:range.e.r-range.s.r>=100 || range.e.c-range.s.c>=20 };
+    });
+    return res.json({ kind: 'workbook', name:item.name, sheets });
+  }
+  return res.status(415).json({ error: 'Este formato no se puede editar desde la app. Descargalo, modificalo y volvé a subirlo.' });
+});
+app.post('/api/edit/:id', loggedIn, async (req,res) => {
+  const item = getCachedItem(req.params.id);
+  if (!item || !item.abs.startsWith(DATA + path.sep)) return res.sendStatus(404);
+  try {
+    if (EDITABLE_TEXT.has(item.ext)) {
+      if (typeof req.body.text !== 'string' || req.body.text.length > 500000) return res.status(400).json({ error: 'El texto es inválido o supera 500 KB.' });
+      const temp = item.abs + '.' + crypto.randomBytes(5).toString('hex') + '.tmp';
+      await fs.promises.writeFile(temp, req.body.text, { encoding:'utf8', mode:0o600 });
+      await fs.promises.rename(temp, item.abs);
+    } else if (item.ext === 'xlsx') {
+      const updates = req.body.updates;
+      if (!Array.isArray(updates) || updates.length > 500) return res.status(400).json({ error: 'La edición de planilla es inválida.' });
+      const wb = XLSX.readFile(item.abs, { cellDates:true });
+      for (const change of updates) {
+        if (!change || !wb.SheetNames.includes(change.sheet) || !Number.isInteger(change.r) || !Number.isInteger(change.c) || change.r < 0 || change.r >= 10000 || change.c < 0 || change.c >= 1000 || typeof change.value !== 'string' || change.value.length > 10000) return res.status(400).json({ error: 'Hay una celda inválida.' });
+        const ws = wb.Sheets[change.sheet];
+        const address = XLSX.utils.encode_cell({ r:change.r, c:change.c });
+        const cell = ws[address] || {};
+        cell.t = 's'; cell.v = change.value; delete cell.f; ws[address] = cell;
+        const range = ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']) : { s:{r:change.r,c:change.c}, e:{r:change.r,c:change.c} };
+        range.s.r = Math.min(range.s.r, change.r); range.s.c = Math.min(range.s.c, change.c); range.e.r = Math.max(range.e.r, change.r); range.e.c = Math.max(range.e.c, change.c);
+        ws['!ref'] = XLSX.utils.encode_range(range);
+      }
+      const buffer = XLSX.write(wb, { type:'buffer', bookType:'xlsx', cellStyles:true });
+      const temp = item.abs + '.' + crypto.randomBytes(5).toString('hex') + '.tmp';
+      await fs.promises.writeFile(temp, buffer, { mode:0o600 });
+      await fs.promises.rename(temp, item.abs);
+    } else return res.status(415).json({ error: 'Este formato no se puede editar desde la app.' });
+    cache.clear(); cacheAt = 0;
+    return res.json({ ok:true });
+  } catch (e) { console.error('No se pudo guardar el archivo:', e.message); return res.status(500).json({ error:'No se pudieron guardar los cambios.' }); }
+});app.get('/api/preview/:id', loggedIn, async (req,res) => {
   const item = [...cache.values()].find(x => x.id === req.params.id);
   if (!item || !item.abs.startsWith(DATA + path.sep)) return res.sendStatus(404);
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -206,4 +267,6 @@ app.use('/api', (req,res) => res.status(404).json({ error:'Ruta inexistente.' })
 app.use(express.static(path.join(__dirname, 'public'), { index: false, etag: true, maxAge: '1h' }));
 app.get('/{*splat}', (req,res) => req.session.authenticated ? res.sendFile(path.join(__dirname,'public','index.html')) : res.sendFile(path.join(__dirname,'public','login.html')));
 app.listen(PORT, '0.0.0.0', () => console.log(`Archivo IT escuchando en ${PORT}`));
+
+
 
