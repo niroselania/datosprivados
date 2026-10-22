@@ -258,6 +258,18 @@ app.post('/api/edit/:id', loggedIn, async (req,res) => {
   const text = item.content || await extract(item.abs, item.ext);
   const limit = 150000;
   res.json({ name: item.name, text: text.slice(0, limit), truncated: text.length > limit });
+});app.delete('/api/file/:id', loggedIn, async (req,res) => {
+  const item = [...cache.values()].find(x => x.id === req.params.id);
+  if (!item || !item.abs.startsWith(DATA + path.sep)) return res.sendStatus(404);
+  try {
+    await fs.promises.unlink(item.abs);
+    cache.delete(item.abs); cacheAt = 0;
+    return res.json({ ok:true });
+  } catch (e) {
+    if (e.code === 'ENOENT') return res.sendStatus(404);
+    console.error('No se pudo eliminar el archivo:', e.message);
+    return res.status(500).json({ error:'No se pudo eliminar el archivo.' });
+  }
 });app.get('/api/file/:id', loggedIn, (req,res) => {
   const item = [...cache.values()].find(x => x.id === req.params.id);
   if (!item || !item.abs.startsWith(DATA + path.sep)) return res.sendStatus(404);
@@ -267,6 +279,7 @@ app.use('/api', (req,res) => res.status(404).json({ error:'Ruta inexistente.' })
 app.use(express.static(path.join(__dirname, 'public'), { index: false, etag: true, maxAge: '1h' }));
 app.get('/{*splat}', (req,res) => req.session.authenticated ? res.sendFile(path.join(__dirname,'public','index.html')) : res.sendFile(path.join(__dirname,'public','login.html')));
 app.listen(PORT, '0.0.0.0', () => console.log(`Archivo IT escuchando en ${PORT}`));
+
 
 
 
