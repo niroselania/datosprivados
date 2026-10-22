@@ -293,7 +293,119 @@ app.post('/api/edit/:id', loggedIn, async (req,res) => {
 app.use('/api', (req,res) => res.status(404).json({ error:'Ruta inexistente.' }));
 app.use(express.static(path.join(__dirname, 'public'), { index: false, etag: true, maxAge: '1h' }));
 app.get('/{*splat}', (req,res) => req.session.authenticated ? res.sendFile(path.join(__dirname,'public','index.html')) : res.sendFile(path.join(__dirname,'public','login.html')));
-app.listen(PORT, '0.0.0.0', () => console.log(`Archivo IT escuchando en ${PORT}`));
+// Bot de Telegram opcional. El token y la lista permitida se configuran en Portainer.
+const telegramToken = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
+const telegramAllowedUsers = new Set(String(process.env.TELEGRAM_ALLOWED_USERS || '').split(/[\s,;]+/).filter(x => /^\d+$/.test(x)));
+const telegramChoices = new Map();
+const telegramApi = telegramToken ? `https://api.telegram.org/bot${telegramToken}` : '';
+const telegramKey = (chatId, userId) => `${chatId}:${userId}`;
+function normalizeSearch(value) {
+  return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase();
+}
+async function telegramCall(method, body = {}) {
+  const response = await fetch(`${telegramApi}/${method}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body), signal: AbortSignal.timeout(method === 'getUpdates' ? 35000 : 15000)
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.ok) {
+    const error = new Error(String(result.description || `HTTP ${response.status}`).slice(0, 240));
+    error.telegramCode = result.error_code || response.status;
+    throw error;
+  }
+  return result.result;
+}
+async function telegramSend(chatId, text) {
+  // Telegram admite hasta 4096 caracteres; se mantiene margen para evitar rechazos.
+  const chunks = [];
+  let rest = String(text || '');
+  while (rest.length > 3500) {
+    let cut = rest.lastIndexOf('\n', 3500);
+    if (cut < 1000) cut = 3500;
+    chunks.push(rest.slice(0, cut)); rest = rest.slice(cut).trimStart();
+  }
+  if (rest) chunks.push(rest);
+  for (const chunk of chunks) await telegramCall('sendMessage', { chat_id: chatId, text: chunk, disable_web_page_preview: true });
+}
+async function handleTelegramMessage(message) {
+  if (!message || !message.from || !message.chat || message.chat.type !== 'private' || typeof message.text !== 'string') return;
+  const userId = String(message.from.id), chatId = message.chat.id;
+  const text = message.text.trim();
+  if (/^\/id(?:@\w+)?(?:\s|$)/i.test(text)) {
+    return telegramSend(chatId, `Tu ID de Telegram es: ${userId}\nAgregalo en Portainer como TELEGRAM_ALLOWED_USERS y redeplegá el Stack.`);
+  }
+  if (!telegramAllowedUsers.has(userId)) return; // No revelar si el bot contiene datos.
+  const key = telegramKey(chatId, userId);
+  if (/^\/(start|help)(?:@\w+)?(?:\s|$)/i.test(text)) {
+    return telegramSend(chatId, 'Archivo IT está listo. Escribí una palabra o usá /buscar backup. Te mostraré coincidencias numeradas; respondé con el número para consultar el contenido. /cancelar descarta las opciones actuales.');
+  }
+  if (/^\/cancelar(?:@\w+)?(?:\s|$)/i.test(text)) {
+    telegramChoices.delete(key);
+    return telegramSend(chatId, 'Listo, descarté las opciones.');
+  }
+  const choice = telegramChoices.get(key);
+  if (/^\d+$/.test(text) && choice && choice.expires > Date.now()) {
+    const selected = choice.items[Number(text) - 1];
+    if (!selected) return telegramSend(chatId, `Elegí un número del 1 al ${choice.items.length}.`);
+    telegramChoices.delete(key);
+    await ensureCache();
+    const item = getCachedItem(selected.id);
+    if (!item) return telegramSend(chatId, 'Ese archivo ya no está disponible. Hacé la búsqueda de nuevo.');
+    if (!item.content && ['kdbx','rar','zip','doc'].includes(item.ext)) return telegramSend(chatId, `${item.name}\nEste formato no se puede leer desde el bot. Abrilo o descargalo desde la web de Archivo IT.`);
+    const content = item.content || await extract(item.abs, item.ext);
+    if (!content.trim()) return telegramSend(chatId, `${item.name}\nNo pude extraer texto de este archivo. Podés abrirlo o descargarlo desde la web.`);
+    const limit = 12000;
+    const excerpt = content.length > limit ? `${content.slice(0, limit)}\n\n[Contenido recortado. Consultá el archivo completo en la web.]` : content;
+    return telegramSend(chatId, `${item.name}\n\n${excerpt}`);
+  }
+  const query = text.replace(/^\/buscar(?:@\w+)?\s*/i, '').trim();
+  if (!query || query.startsWith('/')) return telegramSend(chatId, 'Escribí una búsqueda, por ejemplo: backup o /buscar backup.');
+  await ensureCache();
+  const terms = normalizeSearch(query).split(/\s+/).filter(Boolean);
+  const all = [...cache.values()];
+  const matches = all.filter(item => {
+    const haystack = normalizeSearch(`${item.name} ${item.rel} ${item.category} ${item.content}`);
+    return terms.every(term => haystack.includes(term));
+  }).sort((a, b) => a.name.localeCompare(b.name, 'es')).slice(0, 10);
+  if (!matches.length) {
+    return telegramSend(chatId, indexing ? 'Todavía estoy leyendo los documentos. Esperá unos segundos y repetí la búsqueda.' : 'No encontré archivos que coincidan con esa búsqueda.');
+  }
+  telegramChoices.set(key, { items: matches.map(({id}) => ({id})), expires: Date.now() + 10 * 60 * 1000 });
+  const list = matches.map((item, index) => `${index + 1}. ${item.name}`).join('\n');
+  return telegramSend(chatId, `Encontré ${matches.length} coincidencia${matches.length === 1 ? '' : 's'} para “${query}”:\n\n${list}\n\nRespondé con el número para ver su contenido.`);
+}
+async function startTelegramBot() {
+  if (!telegramToken) { console.log('Bot de Telegram desactivado (TELEGRAM_BOT_TOKEN vacío).'); return; }
+  if (!telegramAllowedUsers.size) console.warn('Telegram está configurado, pero falta TELEGRAM_ALLOWED_USERS; las consultas quedan bloqueadas.');
+  let offset = 0;
+  try {
+    const webhook = await telegramCall('getWebhookInfo');
+    if (webhook.url) { console.error('Telegram: hay un webhook configurado. Se conserva; quitá el webhook o usá un bot dedicado para activar polling.'); return; }
+  } catch (error) {
+    console.error(`Telegram no pudo iniciar (verificá el token y la salida a Internet; código ${error.telegramCode || 'red'}).`);
+    return;
+  }
+  console.log('Bot de Telegram iniciado con consultas privadas y acceso restringido.');
+  while (true) {
+    try {
+      const updates = await telegramCall('getUpdates', { offset, timeout: 25, allowed_updates: ['message'] });
+      for (const update of updates) {
+        offset = Math.max(offset, update.update_id + 1);
+        try { await handleTelegramMessage(update.message); }
+        catch (error) { console.error(`Telegram no pudo procesar un mensaje (código ${error.telegramCode || 'red'}).`); }
+      }
+      for (const [key, value] of telegramChoices) if (value.expires <= Date.now()) telegramChoices.delete(key);
+    } catch (error) {
+      if (error.telegramCode === 409) console.error('Telegram: otro proceso está consultando este bot; revisá que no exista otro poller activo.');
+      else console.error(`Telegram perdió conexión temporalmente (código ${error.telegramCode || 'red'}); reintentará.`);
+      await new Promise(resolve => setTimeout(resolve, 5000));
+    }
+  }
+}
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Archivo IT escuchando en ${PORT}`);
+  void startTelegramBot();
+});
 
 
 
