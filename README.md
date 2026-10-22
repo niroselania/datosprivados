@@ -1,6 +1,6 @@
 # Archivo IT — despliegue con Portainer
 
-Aplicación web privada para subir documentos y buscar dentro de TXT, Word (.docx), Excel (.xlsx/.xlsm) y PDF. Los archivos se almacenan en el volumen persistente `archivo_it_data`, separado del código. El archivo KeePass se guarda como archivo y no se descifra ni se indexa.
+Aplicación web privada para subir documentos, buscar dentro de TXT, Word (.docx), Excel (.xlsx/.xlsm) y PDF, y abrir una vista previa desde la biblioteca. PDF se muestra en el navegador; texto, Word y Excel se presentan como texto extraído. KeePass, ZIP, RAR y DOC se descargan porque no tienen vista previa en la app. Los archivos se almacenan en el volumen persistente `archivo_it_data`, separado del código. El archivo KeePass se guarda como archivo y no se descifra ni se indexa.
 
 ## Contenido del paquete
 
@@ -18,7 +18,7 @@ Aplicación web privada para subir documentos y buscar dentro de TXT, Word (.doc
    - `SESSION_SECRET`: cadena aleatoria de al menos 32 caracteres.
    El Compose toma estos valores directamente del formulario del Stack. Si falta alguno, el contenedor mostrará un error de configuración en sus logs.
 4. Desplegá el Stack. El volumen `archivo_it_data` se crea automáticamente y sobrevive a recreaciones del contenedor.
-5. El puerto queda ligado a `127.0.0.1` en el host, accesible desde un proxy inverso instalado en ese servidor. Configurá el proxy para reenviar a `127.0.0.1:8090` y usá HTTPS. Para que un proxy inverso en otro contenedor acceda, conectalo a la misma red Docker del Stack y ajustá el enlace del puerto según tu configuración. Para conectarte desde fuera de tu red, accedé por VPN. No publiques el puerto de la aplicación directamente en internet.
+5. El puerto se publica como `${APP_PORT:-9090}` para acceder desde otras PCs de la red local usando `http://IP-DEL-SERVIDOR:9090`. El valor predeterminado `COOKIE_SECURE=0` permite iniciar sesión por HTTP durante pruebas en una red confiable. Para usar un proxy inverso con HTTPS, configurá `COOKIE_SECURE=1` y reenviá al puerto del servidor. No expongas el puerto directamente a Internet; para acceso remoto usá HTTPS y VPN.
 6. En la web, iniciá sesión y cargá archivos o una carpeta completa. Al subir una carpeta, la aplicación sugiere categorías usando nombres y subcarpetas; también podés elegir una categoría manualmente. Cada archivo puede pesar hasta 100 MB.
 
 El selector de carpeta permite importar el contenido actual de `PLANILLAS IT - CREDENCIALES` desde tu PC. Los archivos se copian al servidor; los originales permanecen en su ubicación. Tipos no indexables como `.rar` también se conservan, y `.kdbx` nunca se descifra.
@@ -47,3 +47,5 @@ No subas archivos `.env`, `stack.env` ni credenciales al repositorio. `.gitignor
 ## Copias de seguridad
 
 Respaldá el volumen `archivo_it_data` desde el host o con la solución de backup de Docker que uses. Probá la restauración y guardá el backup cifrado. No agregues el contenido del volumen al repositorio.
+
+
