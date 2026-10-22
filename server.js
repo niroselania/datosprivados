@@ -1,0 +1,195 @@
+'use strict';
+const express = require('express');
+const session = require('express-session');
+const rateLimit = require('express-rate-limit');
+const multer = require('multer');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const mammoth = require('mammoth');
+const XLSX = require('xlsx');
+const { PDFParse } = require('pdf-parse');
+
+const app = express();
+const PORT = 3000;
+const DATA = path.resolve(process.env.DATA_DIR || '/data');
+const USER = process.env.APP_USER;
+const PASSWORD = process.env.APP_PASSWORD;
+const SECRET = process.env.SESSION_SECRET;
+const MAX_MB = Math.max(1, Number(process.env.MAX_UPLOAD_MB || 100));
+const CATEGORIES = ['Credenciales', 'Comandos y scripts', 'Procedimientos', 'Planillas', 'Otros'];
+const ALLOWED = new Set(['txt','md','csv','tsv','log','ps1','bat','sh','yml','yaml','conf','ini','json','xml','sql','py','crt','pem','doc','docx','xls','xlsx','xlsm','pdf','kdbx','rar','zip']);
+
+if (!USER || !PASSWORD || PASSWORD.length < 14 || !SECRET || SECRET.length < 32) {
+  console.error('Configurá APP_USER, APP_PASSWORD (mínimo 14 caracteres) y SESSION_SECRET (mínimo 32 caracteres).');
+  process.exit(1);
+}
+fs.mkdirSync(DATA, { recursive: true });
+for (const category of CATEGORIES) fs.mkdirSync(path.join(DATA, category), { recursive: true });
+const SESSION_DIR = path.join(DATA, 'sessions');
+fs.mkdirSync(SESSION_DIR, { recursive: true, mode: 0o700 });
+
+class JsonSessionStore extends session.Store {
+  constructor() {
+    super();
+    this.reaper = setInterval(() => this.removeExpired(), 30 * 60 * 1000);
+    this.reaper.unref();
+  }
+  filename(sid) { return path.join(SESSION_DIR, crypto.createHash('sha256').update(sid).digest('hex') + '.json'); }
+  get(sid, cb) {
+    fs.promises.readFile(this.filename(sid), 'utf8').then(raw => {
+      const sess = JSON.parse(raw); const expiry = sess.cookie && sess.cookie.expires ? new Date(sess.cookie.expires).getTime() : 0;
+      if (expiry && expiry <= Date.now()) return this.destroy(sid, () => cb(null, null));
+      cb(null, sess);
+    }).catch(err => cb(err.code === 'ENOENT' ? null : err, null));
+  }
+  set(sid, sess, cb = () => {}) {
+    const file = this.filename(sid); const temp = file + '.' + crypto.randomBytes(5).toString('hex') + '.tmp';
+    fs.promises.writeFile(temp, JSON.stringify(sess), { encoding: 'utf8', mode: 0o600 })
+      .then(() => fs.promises.rename(temp, file)).then(() => cb(null)).catch(err => { fs.promises.rm(temp, { force: true }).catch(() => {}); cb(err); });
+  }
+  touch(sid, sess, cb) { this.set(sid, sess, cb); }
+  destroy(sid, cb = () => {}) { fs.promises.rm(this.filename(sid), { force: true }).then(() => cb(null)).catch(cb); }
+  async removeExpired() {
+    try {
+      for (const name of await fs.promises.readdir(SESSION_DIR)) {
+        if (!name.endsWith('.json')) continue;
+        const file = path.join(SESSION_DIR, name);
+        try { const sess = JSON.parse(await fs.promises.readFile(file, 'utf8')); if (sess.cookie?.expires && new Date(sess.cookie.expires).getTime() <= Date.now()) await fs.promises.rm(file, { force: true }); }
+        catch { await fs.promises.rm(file, { force: true }); }
+      }
+    } catch (e) { console.error('No se pudieron limpiar sesiones expiradas:', e.message); }
+  }
+}
+
+app.disable('x-powered-by');
+if (process.env.TRUST_PROXY === '1') app.set('trust proxy', 1);
+app.use(express.urlencoded({ extended: false, limit: '20kb' }));
+app.use(express.json({ limit: '20kb' }));
+app.use(session({
+  name: 'archivoit.sid', secret: SECRET, resave: false, saveUninitialized: false,
+  store: new JsonSessionStore(),
+  cookie: { httpOnly: true, sameSite: 'strict', secure: process.env.COOKIE_SECURE === '1', maxAge: 8 * 60 * 60 * 1000 }
+}));
+const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 8, standardHeaders: true, legacyHeaders: false });
+const loggedIn = (req, res, next) => req.session.authenticated ? next() : res.status(401).json({ error: 'Iniciá sesión para continuar.' });
+const safeEqual = (a, b) => {
+  const aa = Buffer.from(String(a)); const bb = Buffer.from(String(b));
+  return aa.length === bb.length && crypto.timingSafeEqual(aa, bb);
+};
+app.post('/api/login', authLimiter, (req, res) => {
+  if (safeEqual(req.body.username || '', USER) && safeEqual(req.body.password || '', PASSWORD)) {
+    req.session.regenerate(err => { if (err) return res.status(500).json({ error: 'No se pudo iniciar sesión.' }); req.session.authenticated = true; res.json({ ok: true }); });
+  } else res.status(401).json({ error: 'Usuario o contraseña incorrectos.' });
+});
+app.post('/api/logout', loggedIn, (req, res) => req.session.destroy(() => res.json({ ok: true })));
+app.get('/api/me', (req, res) => res.json({ authenticated: Boolean(req.session.authenticated) }));
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const paths = req.body.sourcePath;
+    const source = Array.isArray(paths) ? paths[req.uploadIndex || 0] : paths;
+    const category = CATEGORIES.includes(req.body.category) ? req.body.category : req.body.category === 'Auto' ? categoryGuess(`${source || ''} ${file.originalname}`) : 'Otros';
+    cb(null, path.join(DATA, category));
+  },
+  filename: (req, file, cb) => {
+    req.uploadIndex = (req.uploadIndex || 0) + 1;
+    const original = path.basename(file.originalname).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim().slice(0, 160) || 'archivo';
+    const ext = path.extname(original); const stem = path.basename(original, ext);
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    cb(null, `${stem}__${stamp}_${crypto.randomBytes(3).toString('hex')}${ext}`);
+  }
+});
+const upload = multer({ storage, limits: { fileSize: MAX_MB * 1024 * 1024, files: 100 }, fileFilter: (req, file, cb) => {
+  const ext = path.extname(file.originalname).slice(1).toLowerCase();
+  const accepted = !ext || ALLOWED.has(ext);
+  cb(accepted ? null : new Error('Formato no admitido: ' + ext), accepted);
+} });
+app.post('/api/upload', loggedIn, (req, res) => upload.array('files', 100)(req, res, err => {
+  if (err) return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? `Cada archivo puede pesar hasta ${MAX_MB} MB.` : err.message });
+  cacheAt = 0;
+  res.json({ ok: true, count: (req.files || []).length });
+}));
+
+function categoryFor(rel) { return CATEGORIES.find(c => rel.split(path.sep)[0] === c) || 'Otros'; }
+function fileType(ext) {
+  if (['xlsx','xlsm','csv','tsv'].includes(ext)) return 'Excel';
+  if (!ext) return 'Texto';
+  if (ext === 'docx') return 'Word';
+  if (ext === 'pdf') return 'PDF';
+  if (ext === 'kdbx') return 'Vault';
+  if (['txt','md','log','ps1','bat','sh','yml','yaml','conf','ini','json','xml','sql','py','crt','pem'].includes(ext)) return 'Texto';
+  return 'Otros';
+}
+function categoryGuess(file) {
+  const s = file.toLowerCase();
+  if (/credencial|contraseñ|contraseña|clave|password|kdbx|vault/.test(s)) return 'Credenciales';
+  if (/comando|scrip|powershell|\.ps1|\.bat|\.sh|\.yml|\.yaml|\.conf|docker|rsync|activaci[oó]n/.test(s)) return 'Comandos y scripts';
+  if (/proceso|procedimiento|pol[ií]tica|tarea|manual|erp|etapa|desbloquear/.test(s)) return 'Procedimientos';
+  if (/\.xlsx?|\.xlsm|planilla|excel|mail|escritorio remoto|patagonia/.test(s)) return 'Planillas';
+  return 'Otros';
+}
+async function extract(file, ext) {
+  try {
+    if (!ext || ['txt','md','csv','tsv','log','ps1','bat','sh','yml','yaml','conf','ini','json','xml','sql','py','crt','pem'].includes(ext)) return fs.readFileSync(file, 'utf8');
+    if (ext === 'docx') return (await mammoth.extractRawText({ path: file })).value;
+    if (['xls','xlsx','xlsm'].includes(ext)) {
+      const wb = XLSX.readFile(file, { cellText: true, cellDates: true });
+      return wb.SheetNames.map(name => `Hoja: ${name}\n${XLSX.utils.sheet_to_csv(wb.Sheets[name])}`).join('\n');
+    }
+    if (ext === 'pdf') {
+      const parser = new PDFParse({ data: fs.readFileSync(file) });
+      try { return (await parser.getText()).text; } finally { await parser.destroy(); }
+    }
+  } catch (e) { return ''; }
+  return '';
+}
+async function walk(dir, output = []) {
+  for (const ent of await fs.promises.readdir(dir, { withFileTypes: true })) {
+    if (ent.name.startsWith('.') || ent.name === 'sessions') continue;
+    const abs = path.join(dir, ent.name);
+    if (ent.isDirectory()) await walk(abs, output); else if (ent.isFile()) output.push(abs);
+  }
+  return output;
+}
+const cache = new Map();
+let cacheAt = 0;
+app.get('/api/files', loggedIn, async (req, res) => {
+  try {
+    const now = Date.now();
+    if (now - cacheAt > 300000) {
+      cache.clear();
+      const files = await walk(DATA);
+      for (const abs of files) {
+        const stat = await fs.promises.stat(abs); const rel = path.relative(DATA, abs);
+        const ext = path.extname(abs).slice(1).toLowerCase();
+        const originalName = path.basename(abs).replace(/__[0-9TZ-]+_[a-f0-9]{6}(?=\.|$)/, '');
+        let content = '';
+        if (ALLOWED.has(ext) && !['kdbx','rar','zip','doc'].includes(ext)) content = await extract(abs, ext);
+        const cat = categoryFor(rel) === 'Otros' ? categoryGuess(rel) : categoryFor(rel);
+        cache.set(abs, { id: crypto.createHash('sha256').update(abs).digest('hex'), abs, rel, name: originalName, ext, type: fileType(ext), category: cat, size: stat.size, mtime: stat.mtimeMs, content });
+      }
+      cacheAt = now;
+    }
+    const q = String(req.query.q || '').trim().toLocaleLowerCase();
+    const cat = String(req.query.category || 'all'); const type = String(req.query.type || 'all');
+    const everything = [...cache.values()];
+    const counts = Object.fromEntries(CATEGORIES.map(c => [c, everything.filter(x => x.category === c).length]));
+    const result = everything.filter(x => (cat === 'all' || x.category === cat) && (type === 'all' || x.type === type) && (!q || (x.name + ' ' + x.rel + ' ' + x.category + ' ' + x.content).toLocaleLowerCase().includes(q)));
+    result.sort((a,b) => a.name.localeCompare(b.name, 'es'));
+    res.json({ files: result.map(x => {
+      const i = q ? x.content.toLocaleLowerCase().indexOf(q) : -1;
+      const snippet = x.type === 'Vault' ? 'Bóveda KeePass cifrada; no se indexa.' : i >= 0 ? x.content.slice(Math.max(0,i-65), i+q.length+105).replace(/\s+/g,' ') : '';
+      return { id:x.id, name:x.name, rel:x.rel, type:x.type, category:x.category, size:x.size, snippet, open:`/api/file/${x.id}` };
+    }), categories:CATEGORIES, counts, stats:{ total:everything.length, topics:Object.values(counts).filter(Boolean).length, sheets:everything.filter(x => x.type === 'Excel').length, indexed:everything.filter(x => x.content).length } });
+  } catch (e) { res.status(500).json({ error: 'No se pudo leer la biblioteca.' }); }
+});
+app.get('/api/file/:id', loggedIn, (req,res) => {
+  const item = [...cache.values()].find(x => x.id === req.params.id);
+  if (!item || !item.abs.startsWith(DATA + path.sep)) return res.sendStatus(404);
+  res.download(item.abs, item.name);
+});
+app.use('/api', (req,res) => res.status(404).json({ error:'Ruta inexistente.' }));
+app.use(express.static(path.join(__dirname, 'public'), { index: false, etag: true, maxAge: '1h' }));
+app.get('/{*splat}', (req,res) => req.session.authenticated ? res.sendFile(path.join(__dirname,'public','index.html')) : res.sendFile(path.join(__dirname,'public','login.html')));
+app.listen(PORT, '0.0.0.0', () => console.log(`Archivo IT escuchando en ${PORT}`));
