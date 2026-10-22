@@ -200,6 +200,7 @@ app.get('/api/files', loggedIn, async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'No se pudo leer la biblioteca.' }); }
 });
 const EDITABLE_TEXT = new Set(['txt','md','csv','tsv','log','ps1','bat','sh','yml','yaml','conf','ini','json','xml','sql','py','crt','pem']);
+const TELEGRAM_APPENDABLE_TEXT = new Set(['txt','md','csv','tsv','log']);
 function getCachedItem(id) { return [...cache.values()].find(x => x.id === id); }
 app.get('/api/edit/:id', loggedIn, async (req,res) => {
   const item = getCachedItem(req.params.id);
@@ -297,6 +298,7 @@ app.get('/{*splat}', (req,res) => req.session.authenticated ? res.sendFile(path.
 const telegramToken = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
 const telegramAllowedUsers = new Set(String(process.env.TELEGRAM_ALLOWED_USERS || '').split(/[\s,;]+/).filter(x => /^\d+$/.test(x)));
 const telegramChoices = new Map();
+const telegramPending = new Map();
 const telegramApi = telegramToken ? `https://api.telegram.org/bot${telegramToken}` : '';
 const telegramKey = (chatId, userId) => `${chatId}:${userId}`;
 function normalizeSearch(value) {
@@ -337,11 +339,53 @@ async function handleTelegramMessage(message) {
   if (!telegramAllowedUsers.has(userId)) return; // No revelar si el bot contiene datos.
   const key = telegramKey(chatId, userId);
   if (/^\/(start|help)(?:@\w+)?(?:\s|$)/i.test(text)) {
-    return telegramSend(chatId, 'Archivo IT está listo. Escribí una palabra o usá /buscar backup. Te mostraré coincidencias numeradas; respondé con el número para consultar el contenido. /cancelar descarta las opciones actuales.');
+    return telegramSend(chatId, 'Archivo IT está listo. Escribí una palabra o usá /buscar backup para consultar archivos. Para agregar texto, usá /agregar backup (o “agregame info backup”), elegí un número, escribí el texto y confirmalo. /cancelar descarta la operación.');
   }
   if (/^\/cancelar(?:@\w+)?(?:\s|$)/i.test(text)) {
-    telegramChoices.delete(key);
-    return telegramSend(chatId, 'Listo, descarté las opciones.');
+    telegramChoices.delete(key); telegramPending.delete(key);
+    return telegramSend(chatId, 'Listo, cancelé la operación y descarté el texto pendiente.');
+  }
+  const pending = telegramPending.get(key);
+  if (pending && pending.expires > Date.now() && pending.state === 'await_text') {
+    if (!text) return telegramSend(chatId, 'Mandame el texto que querés agregar o escribí /cancelar.');
+    if (text.length > 20000) return telegramSend(chatId, 'El texto supera el máximo de 20.000 caracteres. Mandá una versión más corta o escribí /cancelar.');
+    const item = getCachedItem(pending.id);
+    if (!item || !TELEGRAM_APPENDABLE_TEXT.has(item.ext)) { telegramPending.delete(key); return telegramSend(chatId, 'Ese archivo ya no está disponible para agregar texto.'); }
+    pending.state = 'confirm'; pending.text = text; pending.expires = Date.now() + 10 * 60 * 1000;
+    const preview = text.length > 900 ? `${text.slice(0, 900)}\n[… vista previa recortada …]` : text;
+    return telegramSend(chatId, `Voy a agregar esto al final de “${item.name}”:\n\n${preview}\n\n¿Está todo bien? Respondé /confirmar para guardar o /cancelar para descartar.`);
+  }
+  if (pending && pending.expires > Date.now() && pending.state === 'confirm') {
+    if (/^\/confirmar(?:@\w+)?$|^si,? agregar!?$/i.test(text)) {
+      const item = getCachedItem(pending.id);
+      if (!item || !TELEGRAM_APPENDABLE_TEXT.has(item.ext) || !item.abs.startsWith(DATA + path.sep)) { telegramPending.delete(key); return telegramSend(chatId, 'No pude validar el archivo. No se hicieron cambios.'); }
+      try {
+        const current = await fs.promises.readFile(item.abs, 'utf8');
+        const addition = pending.text;
+        if (Buffer.byteLength(current, 'utf8') + Buffer.byteLength(addition, 'utf8') + 2 > 500000) return telegramSend(chatId, 'El archivo superaría el límite de 500 KB para edición desde la aplicación. No se hicieron cambios.');
+        const updated = `${current}${current && !current.endsWith('\n') ? '\n' : ''}${addition}${addition.endsWith('\n') ? '' : '\n'}`;
+        const temp = item.abs + '.' + crypto.randomBytes(5).toString('hex') + '.tmp';
+        await fs.promises.writeFile(temp, updated, { encoding:'utf8', mode:0o600 });
+        await fs.promises.rename(temp, item.abs);
+        telegramPending.delete(key); cacheAt = 0;
+        return telegramSend(chatId, `Listo. Agregué la información al final de “${item.name}”.`);
+      } catch (error) {
+        console.error('Telegram no pudo guardar un cambio en un archivo.');
+        return telegramSend(chatId, 'No pude guardar el cambio. El archivo no se modificó; probá desde la web o revisá permisos del volumen.');
+      }
+    }
+    return telegramSend(chatId, 'Todavía no guardé nada. Respondé /confirmar para agregarlo o /cancelar para descartarlo.');
+  }
+  if (pending) telegramPending.delete(key);
+  const addRequest = text.match(/^(?:\/agregar(?:@\w+)?|agregame\s+(?:info|informaci[oó]n))(?:\s+(.+))?$/i);
+  if (addRequest) {
+    const query = (addRequest[1] || '').trim().replace(/^(?:al?\s+archivo\s+|al?\s+|a\s+)/i, '');
+    await ensureCache();
+    const terms = normalizeSearch(query).split(/\s+/).filter(Boolean);
+    const matches = [...cache.values()].filter(item => !terms.length || terms.every(term => normalizeSearch(`${item.name} ${item.rel}`).includes(term))).sort((a,b) => a.name.localeCompare(b.name, 'es')).slice(0,10);
+    if (!matches.length) return telegramSend(chatId, indexing ? 'Todavía estoy leyendo la biblioteca. Esperá unos segundos y repetí /agregar.' : 'No encontré archivos con ese nombre. Probá con una parte distinta del título.');
+    telegramChoices.set(key, { action:'append', items:matches.map(({id}) => ({id})), expires:Date.now() + 10 * 60 * 1000 });
+    return telegramSend(chatId, `¿A cuál archivo querés agregar información?${query ? ` (búsqueda: “${query}”)` : ''}\n\n${matches.map((item,index) => `${index+1}. ${item.name}${TELEGRAM_APPENDABLE_TEXT.has(item.ext) ? '' : ' (no admite agregar texto desde el bot)'}`).join('\n')}${cache.size > matches.length && !query ? '\n\nMostrando los primeros 10 archivos.' : ''}\n\nRespondé con el número.`);
   }
   const choice = telegramChoices.get(key);
   if (/^\d+$/.test(text) && choice && choice.expires > Date.now()) {
@@ -351,6 +395,11 @@ async function handleTelegramMessage(message) {
     await ensureCache();
     const item = getCachedItem(selected.id);
     if (!item) return telegramSend(chatId, 'Ese archivo ya no está disponible. Hacé la búsqueda de nuevo.');
+    if (choice.action === 'append') {
+      if (!TELEGRAM_APPENDABLE_TEXT.has(item.ext)) return telegramSend(chatId, `“${item.name}” no admite agregar texto desde el bot. Para proteger el formato, no hice cambios. Usá un archivo TXT, MD, CSV, TSV o LOG.`);
+      telegramPending.set(key, { state:'await_text', id:item.id, expires:Date.now() + 10 * 60 * 1000 });
+      return telegramSend(chatId, `Elegiste “${item.name}”. Ahora escribí la información que querés agregar. Todavía no se guardará: primero te mostraré una vista previa para que la confirmes.`);
+    }
     if (!item.content && ['kdbx','rar','zip','doc'].includes(item.ext)) return telegramSend(chatId, `${item.name}\nEste formato no se puede leer desde el bot. Abrilo o descargalo desde la web de Archivo IT.`);
     const content = item.content || await extract(item.abs, item.ext);
     if (!content.trim()) return telegramSend(chatId, `${item.name}\nNo pude extraer texto de este archivo. Podés abrirlo o descargarlo desde la web.`);
@@ -395,6 +444,7 @@ async function startTelegramBot() {
         catch (error) { console.error(`Telegram no pudo procesar un mensaje (código ${error.telegramCode || 'red'}).`); }
       }
       for (const [key, value] of telegramChoices) if (value.expires <= Date.now()) telegramChoices.delete(key);
+      for (const [key, value] of telegramPending) if (value.expires <= Date.now()) telegramPending.delete(key);
     } catch (error) {
       if (error.telegramCode === 409) console.error('Telegram: otro proceso está consultando este bot; revisá que no exista otro poller activo.');
       else console.error(`Telegram perdió conexión temporalmente (código ${error.telegramCode || 'red'}); reintentará.`);

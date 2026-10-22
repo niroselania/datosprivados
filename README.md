@@ -28,9 +28,9 @@ Aplicación web privada para subir documentos, buscar dentro de TXT, Word (.docx
 1. En Portainer, agregá `TELEGRAM_BOT_TOKEN` con el token de BotFather y dejá `TELEGRAM_ALLOWED_USERS` vacío por ahora. Redeplegá el Stack.
 2. Abrí un chat privado con tu bot y enviá `/id`. El bot responde únicamente con tu ID numérico; no muestra datos hasta autorizarlo.
 3. En Portainer, agregá ese ID en `TELEGRAM_ALLOWED_USERS` y redeplegá. Para más usuarios, separá los IDs con comas. No compartas el token ni lo subas al repositorio.
-4. En el chat privado, escribí `backup` o `/buscar backup`. El bot lista hasta 10 coincidencias por nombre o contenido. Respondé con el número para recibir el texto extraído; las opciones vencen a los 10 minutos. `/cancelar` las descarta.
+4. En el chat privado, escribí `backup` o `/buscar backup`. El bot lista hasta 10 coincidencias por nombre o contenido. Respondé con el número para recibir el texto extraído. Para agregar información, enviá `/agregar` para elegir entre los primeros 10 archivos, o `/agregar backup` para buscar archivos por nombre. Elegí uno, mandá el texto, revisá la vista previa y confirmá con `/confirmar`; `/cancelar` descarta la operación. Las opciones y confirmaciones vencen a los 10 minutos.
 
-El bot solo atiende chats privados y solo IDs autorizados. Admite el contenido indexable (texto, CSV, Word DOCX, Excel y PDF con texto). No descifra KeePass ni lee ZIP/RAR o Word DOC antiguo. Para esos formatos, indica usar la web.
+El bot solo atiende chats privados y solo IDs autorizados. Admite el contenido indexable (texto, CSV, Word DOCX, Excel y PDF con texto). No descifra KeePass ni lee ZIP/RAR o Word DOC antiguo. Para esos formatos, indica usar la web. La función de agregar añade al final únicamente de TXT, MD, CSV, TSV y LOG; otros formatos se protegen para evitar corromperlos.
 
 El bot usa consultas salientes (long polling) a Telegram desde el contenedor; el servidor necesita acceso a Internet. Si el token ya tiene un webhook configurado o un segundo proceso está usando long polling, el bot no puede recibir actualizaciones simultáneamente: usá un bot dedicado o desactivá el otro método antes de habilitarlo. La aplicación no elimina webhooks automáticamente.
 
