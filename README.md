@@ -10,13 +10,13 @@ Aplicación web privada para subir documentos y buscar dentro de TXT, Word (.doc
 
 ## Despliegue recomendado
 
-1. Creá un repositorio **privado** en GitHub y subí solamente el contenido de esta carpeta. Revisá antes que no haya documentos reales, `.env` ni credenciales.
-2. En Portainer, creá un Stack desde ese repositorio. Seleccioná `docker-compose.yml` si te pide el archivo Compose.
+1. Descomprimí el ZIP y subí el contenido de la carpeta al repositorio **privado** de GitHub; no subas solo el ZIP. En la raíz del repositorio deben quedar `docker-compose.yml`, `Dockerfile`, `server.js`, `package.json` y la carpeta `public`. Revisá que no haya documentos reales, `.env` ni credenciales.
+2. En Portainer, creá un Stack desde ese repositorio y elegí la misma rama donde están esos archivos. Si están directamente en la raíz, el Compose path es `docker-compose.yml`. Si subiste la carpeta contenedora completa, usá `Archivo IT Portainer/docker-compose.yml` como ruta. Portainer clona el repositorio y resuelve el Compose path desde su raíz.
 3. En el apartado **Environment variables** del Stack definí:
    - `APP_USER`: tu usuario.
    - `APP_PASSWORD`: una contraseña aleatoria larga (mínimo 14 caracteres).
    - `SESSION_SECRET`: cadena aleatoria de al menos 32 caracteres.
-   En Docker Standalone/Podman, Portainer las pasa al contenedor mediante `stack.env`; el Compose ya no interpola esas tres variables.
+   El Compose toma estos valores directamente del formulario del Stack. Si falta alguno, el contenedor mostrará un error de configuración en sus logs.
 4. Desplegá el Stack. El volumen `archivo_it_data` se crea automáticamente y sobrevive a recreaciones del contenedor.
 5. El puerto queda ligado a `127.0.0.1` en el host, accesible desde un proxy inverso instalado en ese servidor. Configurá el proxy para reenviar a `127.0.0.1:8090` y usá HTTPS. Para que un proxy inverso en otro contenedor acceda, conectalo a la misma red Docker del Stack y ajustá el enlace del puerto según tu configuración. Para conectarte desde fuera de tu red, accedé por VPN. No publiques el puerto de la aplicación directamente en internet.
 6. En la web, iniciá sesión y cargá archivos o una carpeta completa. Al subir una carpeta, la aplicación sugiere categorías usando nombres y subcarpetas; también podés elegir una categoría manualmente. Cada archivo puede pesar hasta 100 MB.
@@ -31,7 +31,7 @@ El selector de carpeta permite importar el contenido actual de `PLANILLAS IT - C
 
 Usá una salida para `SESSION_SECRET`; creá una contraseña distinta para `APP_PASSWORD`. Guardalas en el gestor de contraseñas, no en GitHub.
 
-El Stack usa `env_file: stack.env`, que Portainer proporciona con las variables definidas en su formulario para Docker Standalone/Podman. No subas un archivo `stack.env` ni `.env` con secretos al repositorio. Este método no aplica a Docker Swarm.
+No subas archivos `.env`, `stack.env` ni credenciales al repositorio. `.gitignore` excluye formatos de credenciales, documentos y datos habituales; verificá los archivos del repositorio antes de hacerlo público.
 
 ## Datos y límites
 
