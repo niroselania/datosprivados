@@ -153,24 +153,39 @@ async function walk(dir, output = []) {
   return output;
 }
 const cache = new Map();
-let cacheAt = 0;
+let cacheAt = 0, indexing = false, refreshPromise = null;
+async function ensureCache() {
+  if (refreshPromise) { await refreshPromise; return; }
+  if (indexing && cacheAt) return;
+  if (cacheAt && Date.now() - cacheAt <= 300000) return;
+  refreshPromise = (async () => {
+    cache.clear();
+    const paths = await walk(DATA);
+    const entries = [];
+    for (const abs of paths) {
+      const stat = await fs.promises.stat(abs); const rel = path.relative(DATA, abs);
+      const ext = path.extname(abs).slice(1).toLowerCase();
+      const originalName = path.basename(abs).replace(/__[0-9TZ-]+_[a-f0-9]{6}(?=\.|$)/, '');
+      const cat = categoryFor(rel) === 'Otros' ? categoryGuess(rel) : categoryFor(rel);
+      const item = { id:crypto.createHash('sha256').update(abs).digest('hex'), abs, rel, name:originalName, ext, type:fileType(ext), category:cat, size:stat.size, mtime:stat.mtimeMs, content:'' };
+      cache.set(abs, item); entries.push(item);
+    }
+    cacheAt = Date.now(); indexing = true;
+    const toIndex = entries.filter(x => ALLOWED.has(x.ext) && !['kdbx','rar','zip','doc'].includes(x.ext));
+    (async () => {
+      try {
+        for (let i = 0; i < toIndex.length; i += 2) {
+          await Promise.all(toIndex.slice(i, i + 2).map(async item => { item.content = await extract(item.abs, item.ext); }));
+        }
+      } catch (e) { console.error('Error al indexar archivos:', e.message); }
+      finally { indexing = false; cacheAt = Date.now(); }
+    })();
+  })().finally(() => { refreshPromise = null; });
+  await refreshPromise;
+}
 app.get('/api/files', loggedIn, async (req, res) => {
   try {
-    const now = Date.now();
-    if (now - cacheAt > 300000) {
-      cache.clear();
-      const files = await walk(DATA);
-      for (const abs of files) {
-        const stat = await fs.promises.stat(abs); const rel = path.relative(DATA, abs);
-        const ext = path.extname(abs).slice(1).toLowerCase();
-        const originalName = path.basename(abs).replace(/__[0-9TZ-]+_[a-f0-9]{6}(?=\.|$)/, '');
-        let content = '';
-        if (ALLOWED.has(ext) && !['kdbx','rar','zip','doc'].includes(ext)) content = await extract(abs, ext);
-        const cat = categoryFor(rel) === 'Otros' ? categoryGuess(rel) : categoryFor(rel);
-        cache.set(abs, { id: crypto.createHash('sha256').update(abs).digest('hex'), abs, rel, name: originalName, ext, type: fileType(ext), category: cat, size: stat.size, mtime: stat.mtimeMs, content });
-      }
-      cacheAt = now;
-    }
+    await ensureCache();
     const q = String(req.query.q || '').trim().toLocaleLowerCase();
     const cat = String(req.query.category || 'all'); const type = String(req.query.type || 'all');
     const everything = [...cache.values()];
@@ -181,7 +196,7 @@ app.get('/api/files', loggedIn, async (req, res) => {
       const i = q ? x.content.toLocaleLowerCase().indexOf(q) : -1;
       const snippet = x.type === 'Vault' ? 'Bóveda KeePass cifrada; no se indexa.' : i >= 0 ? x.content.slice(Math.max(0,i-65), i+q.length+105).replace(/\s+/g,' ') : '';
       return { id:x.id, name:x.name, rel:x.rel, ext:x.ext, type:x.type, category:x.category, size:x.size, snippet, open:`/api/file/${x.id}` };
-    }), categories:CATEGORIES, counts, stats:{ total:everything.length, topics:Object.values(counts).filter(Boolean).length, sheets:everything.filter(x => x.type === 'Excel').length, indexed:everything.filter(x => x.content).length } });
+    }), indexing, categories:CATEGORIES, counts, stats:{ total:everything.length, topics:Object.values(counts).filter(Boolean).length, sheets:everything.filter(x => x.type === 'Excel').length, indexed:everything.filter(x => x.content).length } });
   } catch (e) { res.status(500).json({ error: 'No se pudo leer la biblioteca.' }); }
 });
 const EDITABLE_TEXT = new Set(['txt','md','csv','tsv','log','ps1','bat','sh','yml','yaml','conf','ini','json','xml','sql','py','crt','pem']);
@@ -279,6 +294,10 @@ app.use('/api', (req,res) => res.status(404).json({ error:'Ruta inexistente.' })
 app.use(express.static(path.join(__dirname, 'public'), { index: false, etag: true, maxAge: '1h' }));
 app.get('/{*splat}', (req,res) => req.session.authenticated ? res.sendFile(path.join(__dirname,'public','index.html')) : res.sendFile(path.join(__dirname,'public','login.html')));
 app.listen(PORT, '0.0.0.0', () => console.log(`Archivo IT escuchando en ${PORT}`));
+
+
+
+
 
 
 

@@ -19,7 +19,7 @@ Aplicación web privada para subir documentos, buscar dentro de TXT, Word (.docx
    El Compose toma estos valores directamente del formulario del Stack. Si falta alguno, el contenedor mostrará un error de configuración en sus logs.
 4. Desplegá el Stack. El volumen `archivo_it_data` se crea automáticamente y sobrevive a recreaciones del contenedor.
 5. El puerto se publica como `${APP_PORT:-9090}` para acceder desde otras PCs de la red local usando `http://IP-DEL-SERVIDOR:9090`. El valor predeterminado `COOKIE_SECURE=0` permite iniciar sesión por HTTP durante pruebas en una red confiable. Para usar un proxy inverso con HTTPS, configurá `COOKIE_SECURE=1` y reenviá al puerto del servidor. No expongas el puerto directamente a Internet; para acceso remoto usá HTTPS y VPN.
-6. En la web, iniciá sesión y cargá archivos o una carpeta completa. Al subir una carpeta, la aplicación sugiere categorías usando nombres y subcarpetas; también podés elegir una categoría manualmente. Cada archivo puede pesar hasta 100 MB.
+6. En la web, iniciá sesión y cargá archivos o una carpeta completa. La biblioteca aparece primero y el índice de búsqueda se completa en segundo plano. Al subir una carpeta, la aplicación sugiere categorías usando nombres y subcarpetas; también podés elegir una categoría manualmente. Cada archivo puede pesar hasta 100 MB.
 
 El selector de carpeta permite importar el contenido actual de `PLANILLAS IT - CREDENCIALES` desde tu PC. Los archivos se copian al servidor; los originales permanecen en su ubicación. Tipos no indexables como `.rar` también se conservan, y `.kdbx` nunca se descifra.
 
@@ -47,6 +47,7 @@ No subas archivos `.env`, `stack.env` ni credenciales al repositorio. `.gitignor
 ## Copias de seguridad
 
 Respaldá el volumen `archivo_it_data` desde el host o con la solución de backup de Docker que uses. Probá la restauración y guardá el backup cifrado. No agregues el contenido del volumen al repositorio.
+
 
 
 
