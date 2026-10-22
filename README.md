@@ -5,13 +5,13 @@ Aplicación web privada para subir documentos y buscar dentro de TXT, Word (.doc
 ## Contenido del paquete
 
 - `server.js`, `public/`, `package.json`: aplicación.
-- `Dockerfile`, `compose.yaml`: imagen y Stack de Portainer.
+- `Dockerfile`, `docker-compose.yml`: imagen y Stack de Portainer.
 - El repositorio **no debe contener** tus archivos de datos. `.gitignore` excluye documentos sensibles y archivos de datos comunes.
 
 ## Despliegue recomendado
 
 1. Creá un repositorio **privado** en GitHub y subí solamente el contenido de esta carpeta. Revisá antes que no haya documentos reales, `.env` ni credenciales.
-2. En Portainer, creá un Stack desde ese repositorio y elegí `compose.yaml`.
+2. En Portainer, creá un Stack desde ese repositorio. Seleccioná `docker-compose.yml` si te pide el archivo Compose.
 3. En las variables del Stack definí:
    - `APP_USER`: tu usuario.
    - `APP_PASSWORD`: una contraseña aleatoria larga (mínimo 14 caracteres).
