@@ -4,14 +4,14 @@ services:
     container_name: archivo-it
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8090:3000"
+      - "127.0.0.1:${APP_PORT:-9090}:3000"
     environment:
-      APP_USER: "${APP_USER:-}"
-      APP_PASSWORD: "${APP_PASSWORD:-}"
-      SESSION_SECRET: "${SESSION_SECRET:-}"
+      APP_USER: ${APP_USER:?Definí APP_USER en Portainer}
+      APP_PASSWORD: ${APP_PASSWORD:?Definí APP_PASSWORD en Portainer}
+      SESSION_SECRET: ${SESSION_SECRET:?Definí SESSION_SECRET en Portainer}
       DATA_DIR: /data
       TRUST_PROXY: "1"
-      COOKIE_SECURE: "1"
+      COOKIE_SECURE: ${COOKIE_SECURE:-1}
       MAX_UPLOAD_MB: "100"
     volumes:
       - archivo_it_data:/data
