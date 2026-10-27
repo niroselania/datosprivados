@@ -142,7 +142,28 @@ app.delete('/api/private-keys/:id', loggedIn, async (req, res) => {
     if (remaining.length === entries.length) return res.sendStatus(404);
     await writePrivateKeys(remaining); return res.json({ ok:true });
   } catch { return res.status(500).json({ error:'No se pudo eliminar la clave privada.' }); }
-});app.post('/api/upload', loggedIn, (req, res) => upload.array('files', 100)(req, res, err => {
+});
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const paths = req.body.sourcePath;
+    const source = Array.isArray(paths) ? paths[req.uploadIndex || 0] : paths;
+    const category = CATEGORIES.includes(req.body.category) ? req.body.category : req.body.category === 'Auto' ? categoryGuess(`${source || ''} ${file.originalname}`) : 'Otros';
+    cb(null, path.join(DATA, category));
+  },
+  filename: (req, file, cb) => {
+    req.uploadIndex = (req.uploadIndex || 0) + 1;
+    const original = path.basename(file.originalname).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim().slice(0, 160) || 'archivo';
+    const ext = path.extname(original); const stem = path.basename(original, ext);
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    cb(null, `${stem}__${stamp}_${crypto.randomBytes(3).toString('hex')}${ext}`);
+  }
+});
+const upload = multer({ storage, limits: { fileSize: MAX_MB * 1024 * 1024, files: 100 }, fileFilter: (req, file, cb) => {
+  const ext = path.extname(file.originalname).slice(1).toLowerCase();
+  const accepted = !ext || ALLOWED.has(ext);
+  cb(accepted ? null : new Error('Formato no admitido: ' + ext), accepted);
+} });
+app.post('/api/upload', loggedIn, (req, res) => upload.array('files', 100)(req, res, err => {
   if (err) {
     const message = String(err.message || 'Error desconocido').slice(0, 220);
     console.warn(`Carga rechazada (${err.code || 'error'}): ${message}`);
