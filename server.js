@@ -143,10 +143,17 @@ app.delete('/api/private-keys/:id', loggedIn, async (req, res) => {
     await writePrivateKeys(remaining); return res.json({ ok:true });
   } catch { return res.status(500).json({ error:'No se pudo eliminar la clave privada.' }); }
 });app.post('/api/upload', loggedIn, (req, res) => upload.array('files', 100)(req, res, err => {
-  if (err) return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? `Cada archivo puede pesar hasta ${MAX_MB} MB.` : err.message });
+  if (err) {
+    const message = String(err.message || 'Error desconocido').slice(0, 220);
+    console.warn(`Carga rechazada (${err.code || 'error'}): ${message}`);
+    if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error:`Cada archivo puede pesar hasta ${MAX_MB} MB.` });
+    if (['ENOSPC','EACCES','EROFS','EDQUOT'].includes(err.code)) return res.status(500).json({ error:'El servidor no puede escribir en el volumen de datos. Revisá espacio y permisos del volumen en Portainer.' });
+    return res.status(400).json({ error:message });
+  }
   cacheAt = 0;
   res.json({ ok: true, count: (req.files || []).length });
 }));
+
 
 function categoryFor(rel) { return CATEGORIES.find(c => rel.split(path.sep)[0] === c) || 'Otros'; }
 function fileType(ext) {
