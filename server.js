@@ -28,10 +28,6 @@ fs.mkdirSync(DATA, { recursive: true });
 for (const category of CATEGORIES) fs.mkdirSync(path.join(DATA, category), { recursive: true });
 const SESSION_DIR = path.join(DATA, 'sessions');
 fs.mkdirSync(SESSION_DIR, { recursive: true, mode: 0o700 });
-const PRIVATE_KEYS_DIR = path.join(DATA, '.private');
-const PRIVATE_KEYS_FILE = path.join(PRIVATE_KEYS_DIR, 'private-keys.json');
-fs.mkdirSync(PRIVATE_KEYS_DIR, { recursive: true, mode: 0o700 });
-fs.chmodSync(PRIVATE_KEYS_DIR, 0o700);
 
 class JsonSessionStore extends session.Store {
   constructor() {
@@ -88,61 +84,7 @@ app.post('/api/login', authLimiter, (req, res) => {
 });
 app.post('/api/logout', loggedIn, (req, res) => req.session.destroy(() => res.json({ ok: true })));
 app.get('/api/me', (req, res) => res.json({ authenticated: Boolean(req.session.authenticated) }));
-async function readPrivateKeys() {
-  try { const data = JSON.parse(await fs.promises.readFile(PRIVATE_KEYS_FILE, 'utf8')); return Array.isArray(data) ? data : []; }
-  catch (error) { if (error.code === 'ENOENT') return []; throw error; }
-}
-async function writePrivateKeys(records) {
-  const temp = PRIVATE_KEYS_FILE + '.' + crypto.randomBytes(6).toString('hex') + '.tmp';
-  await fs.promises.writeFile(temp, JSON.stringify(records), { encoding:'utf8', mode:0o600 });
-  await fs.promises.rename(temp, PRIVATE_KEYS_FILE);
-}
-const derivePrivateKey = (password, salt) => new Promise((resolve, reject) => crypto.pbkdf2(password, salt, 310000, 32, 'sha256', (error, key) => error ? reject(error) : resolve(key)));
-async function decryptPrivateKeyRecord(entry, password) {
-  const derived = await derivePrivateKey(password, Buffer.from(entry.salt, 'base64'));
-  const decipher = crypto.createDecipheriv('aes-256-gcm', derived, Buffer.from(entry.iv, 'base64'));
-  decipher.setAuthTag(Buffer.from(entry.tag, 'base64'));
-  return Buffer.concat([decipher.update(Buffer.from(entry.ciphertext, 'base64')), decipher.final()]).toString('utf8');
-}
-app.get('/api/private-keys', loggedIn, async (req, res) => {
-  try { const entries = await readPrivateKeys(); res.json({ entries: entries.map(({id,entity,createdAt}) => ({id,entity,createdAt})) }); }
-  catch { res.status(500).json({ error:'No se pudo leer el apartado de claves privadas.' }); }
-});
-app.post('/api/private-keys', loggedIn, async (req, res) => {
-  const { entity, key, lockPassword } = req.body || {};
-  if (typeof entity !== 'string' || !entity.trim() || entity.trim().length > 120 || typeof key !== 'string' || !key.trim() || key.length > 20000 || typeof lockPassword !== 'string' || lockPassword.length < 12 || lockPassword.length > 200)
-    return res.status(400).json({ error:'Completá entidad y clave, y usá una contraseña de candado de al menos 12 caracteres.' });
-  try {
-    const salt = crypto.randomBytes(16), iv = crypto.randomBytes(12), derived = await derivePrivateKey(lockPassword, salt);
-    const cipher = crypto.createCipheriv('aes-256-gcm', derived, iv);
-    const ciphertext = Buffer.concat([cipher.update(key, 'utf8'), cipher.final()]);
-    const entries = await readPrivateKeys();
-    const entry = { id:crypto.randomUUID(), entity:entity.trim(), salt:salt.toString('base64'), iv:iv.toString('base64'), tag:cipher.getAuthTag().toString('base64'), ciphertext:ciphertext.toString('base64'), createdAt:new Date().toISOString() };
-    entries.push(entry); await writePrivateKeys(entries);
-    return res.status(201).json({ entry:{id:entry.id,entity:entry.entity,createdAt:entry.createdAt} });
-  } catch { return res.status(500).json({ error:'No se pudo guardar la clave privada.' }); }
-});
-const privateUnlockLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: true, legacyHeaders: false, message:{error:'Demasiados intentos. Esperá 15 minutos y volvé a probar.'} });
-app.post('/api/private-keys/:id/unlock', loggedIn, privateUnlockLimiter, async (req, res) => {
-  const password = req.body && req.body.lockPassword;
-  if (typeof password !== 'string' || password.length > 200) return res.status(400).json({error:'Contraseña inválida.'});
-  try {
-    const entries = await readPrivateKeys(), entry = entries.find(item => item.id === req.params.id);
-    if (!entry) return res.sendStatus(404);
-    const derived = await derivePrivateKey(password, Buffer.from(entry.salt, 'base64'));
-    const decipher = crypto.createDecipheriv('aes-256-gcm', derived, Buffer.from(entry.iv, 'base64'));
-    decipher.setAuthTag(Buffer.from(entry.tag, 'base64'));
-    const value = Buffer.concat([decipher.update(Buffer.from(entry.ciphertext, 'base64')), decipher.final()]).toString('utf8');
-    return res.json({key:value});
-  } catch { return res.status(401).json({error:'La contraseña no coincide.'}); }
-});
-app.delete('/api/private-keys/:id', loggedIn, async (req, res) => {
-  try {
-    const entries = await readPrivateKeys(), remaining = entries.filter(entry => entry.id !== req.params.id);
-    if (remaining.length === entries.length) return res.sendStatus(404);
-    await writePrivateKeys(remaining); return res.json({ ok:true });
-  } catch { return res.status(500).json({ error:'No se pudo eliminar la clave privada.' }); }
-});
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const paths = req.body.sourcePath;
@@ -164,17 +106,10 @@ const upload = multer({ storage, limits: { fileSize: MAX_MB * 1024 * 1024, files
   cb(accepted ? null : new Error('Formato no admitido: ' + ext), accepted);
 } });
 app.post('/api/upload', loggedIn, (req, res) => upload.array('files', 100)(req, res, err => {
-  if (err) {
-    const message = String(err.message || 'Error desconocido').slice(0, 220);
-    console.warn(`Carga rechazada (${err.code || 'error'}): ${message}`);
-    if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error:`Cada archivo puede pesar hasta ${MAX_MB} MB.` });
-    if (['ENOSPC','EACCES','EROFS','EDQUOT'].includes(err.code)) return res.status(500).json({ error:'El servidor no puede escribir en el volumen de datos. Revisá espacio y permisos del volumen en Portainer.' });
-    return res.status(400).json({ error:message });
-  }
+  if (err) return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? `Cada archivo puede pesar hasta ${MAX_MB} MB.` : err.message });
   cacheAt = 0;
   res.json({ ok: true, count: (req.files || []).length });
 }));
-
 
 function categoryFor(rel) { return CATEGORIES.find(c => rel.split(path.sep)[0] === c) || 'Otros'; }
 function fileType(ext) {
@@ -364,9 +299,7 @@ const telegramToken = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
 const telegramAllowedUsers = new Set(String(process.env.TELEGRAM_ALLOWED_USERS || '').split(/[\s,;]+/).filter(x => /^\d+$/.test(x)));
 const telegramChoices = new Map();
 const telegramPending = new Map();
-const telegramPrivateAttempts = new Map();
 const telegramApi = telegramToken ? `https://api.telegram.org/bot${telegramToken}` : '';
-const telegramKey = (chatId, userId) => `${chatId}:${userId}`;
 function normalizeSearch(value) {
   return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase();
 }
@@ -383,138 +316,102 @@ async function telegramCall(method, body = {}) {
   }
   return result.result;
 }
-async function telegramSend(chatId, text) {
-  // Telegram admite hasta 4096 caracteres; se mantiene margen para evitar rechazos.
+function splitText(text, max, minCut) {
   const chunks = [];
   let rest = String(text || '');
-  while (rest.length > 3500) {
-    let cut = rest.lastIndexOf('\n', 3500);
-    if (cut < 1000) cut = 3500;
+  while (rest.length > max) {
+    let cut = rest.lastIndexOf('\n', max);
+    if (cut < minCut) cut = max;
     chunks.push(rest.slice(0, cut)); rest = rest.slice(cut).trimStart();
   }
   if (rest) chunks.push(rest);
-  for (const chunk of chunks) await telegramCall('sendMessage', { chat_id: chatId, text: chunk, disable_web_page_preview: true });
+  return chunks;
 }
-async function handleTelegramMessage(message) {
-  if (!message || !message.from || !message.chat || message.chat.type !== 'private' || typeof message.text !== 'string') return;
-  const userId = String(message.from.id), chatId = message.chat.id;
-  const rawText = message.text;
-  const text = rawText.trim();
-  if (/^\/id(?:@\w+)?(?:\s|$)/i.test(text) && telegramPending.get(telegramKey(chatId, userId))?.state !== 'await_private_password') {
-    return telegramSend(chatId, `Tu ID de Telegram es: ${userId}\nAgregalo en Portainer como TELEGRAM_ALLOWED_USERS y redeplegá el Stack.`);
+async function telegramSend(chatId, text) {
+  // Telegram admite hasta 4096 caracteres; se mantiene margen para evitar rechazos.
+  for (const chunk of splitText(text, 3500, 1000)) await telegramCall('sendMessage', { chat_id: chatId, text: chunk, disable_web_page_preview: true });
+}
+// Handler compartido por Telegram y Discord. ctx = { platform, userId, chatId, text, send, allowed, allowEnv }
+// En los textos fijos, §comando se muestra como /comando (Telegram) o !comando (Discord).
+async function handleBotMessage(ctx) {
+  const { platform, userId, chatId, text, allowed, allowEnv } = ctx;
+  const send = (t) => ctx.send(String(t).replace(/§(buscar|agregar|confirmar|cancelar)/g, (platform === 'discord' ? '!' : '/') + '$1'));
+  if (/^\/id(?:@\w+)?(?:\s|$)/i.test(text)) {
+    return send(`Tu ID de ${platform === 'discord' ? 'Discord' : 'Telegram'} es: ${userId}\nAgregalo en Portainer como ${allowEnv} y redeplegá el Stack.`);
   }
-  if (!telegramAllowedUsers.has(userId)) return; // No revelar si el bot contiene datos.
-  const key = telegramKey(chatId, userId);
-  const pending = telegramPending.get(key);
-  if (!(pending && pending.state === 'await_private_password') && /^\/(start|help)(?:@\w+)?(?:\s|$)/i.test(text)) {
-    return telegramSend(chatId, 'Archivo IT está listo. Escribí una palabra o usá /buscar backup para consultar archivos. Para claves protegidas, usá /claves o /clave servidor; el bot te pedirá la contraseña del candado antes de revelarlas. Para agregar texto, usá /agregar backup (o “agregame info backup”), elegí un número, escribí el texto y confirmalo. /cancelar descarta la operación.');
+  if (!allowed.has(userId)) return; // No revelar si el bot contiene datos.
+  const key = `${platform}:${chatId}:${userId}`;
+  if (/^\/(start|help)(?:@\w+)?(?:\s|$)/i.test(text)) {
+    return send('Archivo IT está listo. Escribí una palabra o usá §buscar backup para consultar archivos. Para agregar texto, usá §agregar backup (o “agregame info backup”), elegí un número, escribí el texto y confirmalo. §cancelar descarta la operación.');
   }
   if (/^\/cancelar(?:@\w+)?(?:\s|$)/i.test(text)) {
     telegramChoices.delete(key); telegramPending.delete(key);
-    return telegramSend(chatId, 'Listo, cancelé la operación y descarté el texto pendiente.');
+    return send('Listo, cancelé la operación y descarté el texto pendiente.');
   }
- if (pending && pending.expires > Date.now() && pending.state === 'await_private_password') {
-    try { await telegramCall('deleteMessage', { chat_id:chatId, message_id:message.message_id }); }
-    catch { telegramPending.delete(key); return telegramSend(chatId, 'No pude borrar el mensaje con la contraseña. No verifiqué ni mostré la clave; eliminá ese mensaje manualmente y volvé a empezar.'); }
-    if (rawText.length > 200) return telegramSend(chatId, 'La contraseña supera el límite permitido. Volvé a solicitar la clave e intentá con otra.');
-    const priorAttempts = telegramPrivateAttempts.get(userId);
-    if (priorAttempts && priorAttempts.until <= Date.now()) telegramPrivateAttempts.delete(userId);
-    if ((telegramPrivateAttempts.get(userId)?.count || 0) >= 10) { telegramPending.delete(key); return telegramSend(chatId, 'Demasiados intentos para abrir claves privadas. Esperá 15 minutos antes de volver a intentar.'); }
-    try {
-      const entries = await readPrivateKeys(), entry = entries.find(item => item.id === pending.id);
-      if (!entry) { telegramPending.delete(key); return telegramSend(chatId, 'Ese registro ya no existe. Volvé a buscarlo.'); }
-      const secret = await decryptPrivateKeyRecord(entry, rawText);
-      telegramPending.delete(key);
-      return telegramSend(chatId, `${entry.entity}\n\n${secret}`);
-    } catch {
-      pending.attempts = (pending.attempts || 0) + 1;
-      const recent = telegramPrivateAttempts.get(userId);
-      const failures = (recent && recent.until > Date.now() ? recent.count : 0) + 1;
-      telegramPrivateAttempts.set(userId, { count:failures, until:Date.now() + 15 * 60 * 1000 });
-      if (pending.attempts >= 3) { telegramPending.delete(key); return telegramSend(chatId, 'La contraseña no coincide. Alcanzaste 3 intentos; volvé a buscar el registro para intentar de nuevo.'); }
-      return telegramSend(chatId, 'La contraseña no coincide. El mensaje se borró. Probá de nuevo o escribí /cancelar.');
-    }
-  }
+  const pending = telegramPending.get(key);
   if (pending && pending.expires > Date.now() && pending.state === 'await_text') {
-    if (!text) return telegramSend(chatId, 'Mandame el texto que querés agregar o escribí /cancelar.');
-    if (text.length > 20000) return telegramSend(chatId, 'El texto supera el máximo de 20.000 caracteres. Mandá una versión más corta o escribí /cancelar.');
+    if (!text) return send('Mandame el texto que querés agregar o escribí §cancelar.');
+    if (text.length > 20000) return send('El texto supera el máximo de 20.000 caracteres. Mandá una versión más corta o escribí §cancelar.');
     const item = getCachedItem(pending.id);
-    if (!item || !TELEGRAM_APPENDABLE_TEXT.has(item.ext)) { telegramPending.delete(key); return telegramSend(chatId, 'Ese archivo ya no está disponible para agregar texto.'); }
+    if (!item || !TELEGRAM_APPENDABLE_TEXT.has(item.ext)) { telegramPending.delete(key); return send('Ese archivo ya no está disponible para agregar texto.'); }
     pending.state = 'confirm'; pending.text = text; pending.expires = Date.now() + 10 * 60 * 1000;
     const preview = text.length > 900 ? `${text.slice(0, 900)}\n[… vista previa recortada …]` : text;
-    return telegramSend(chatId, `Voy a agregar esto al final de “${item.name}”:\n\n${preview}\n\n¿Está todo bien? Respondé /confirmar para guardar o /cancelar para descartar.`);
+    return send(`Voy a agregar esto al final de “${item.name}”:\n\n${preview}\n\n¿Está todo bien? Respondé §confirmar para guardar o §cancelar para descartar.`);
   }
   if (pending && pending.expires > Date.now() && pending.state === 'confirm') {
     if (/^\/confirmar(?:@\w+)?$|^si,? agregar!?$/i.test(text)) {
       const item = getCachedItem(pending.id);
-      if (!item || !TELEGRAM_APPENDABLE_TEXT.has(item.ext) || !item.abs.startsWith(DATA + path.sep)) { telegramPending.delete(key); return telegramSend(chatId, 'No pude validar el archivo. No se hicieron cambios.'); }
+      if (!item || !TELEGRAM_APPENDABLE_TEXT.has(item.ext) || !item.abs.startsWith(DATA + path.sep)) { telegramPending.delete(key); return send('No pude validar el archivo. No se hicieron cambios.'); }
       try {
         const current = await fs.promises.readFile(item.abs, 'utf8');
         const addition = pending.text;
-        if (Buffer.byteLength(current, 'utf8') + Buffer.byteLength(addition, 'utf8') + 2 > 500000) return telegramSend(chatId, 'El archivo superaría el límite de 500 KB para edición desde la aplicación. No se hicieron cambios.');
+        if (Buffer.byteLength(current, 'utf8') + Buffer.byteLength(addition, 'utf8') + 2 > 500000) return send('El archivo superaría el límite de 500 KB para edición desde la aplicación. No se hicieron cambios.');
         const updated = `${current}${current && !current.endsWith('\n') ? '\n' : ''}${addition}${addition.endsWith('\n') ? '' : '\n'}`;
         const temp = item.abs + '.' + crypto.randomBytes(5).toString('hex') + '.tmp';
         await fs.promises.writeFile(temp, updated, { encoding:'utf8', mode:0o600 });
         await fs.promises.rename(temp, item.abs);
         telegramPending.delete(key); cacheAt = 0;
-        return telegramSend(chatId, `Listo. Agregué la información al final de “${item.name}”.`);
+        return send(`Listo. Agregué la información al final de “${item.name}”.`);
       } catch (error) {
         console.error('Telegram no pudo guardar un cambio en un archivo.');
-        return telegramSend(chatId, 'No pude guardar el cambio. El archivo no se modificó; probá desde la web o revisá permisos del volumen.');
+        return send('No pude guardar el cambio. El archivo no se modificó; probá desde la web o revisá permisos del volumen.');
       }
     }
-    return telegramSend(chatId, 'Todavía no guardé nada. Respondé /confirmar para agregarlo o /cancelar para descartarlo.');
+    return send('Todavía no guardé nada. Respondé §confirmar para agregarlo o §cancelar para descartarlo.');
   }
   if (pending) telegramPending.delete(key);
-  const fileQuery = text.replace(/^\/buscar(?:@\w+)?\s*/i, '').trim();
-  const keyCommand = text.match(/^\/claves?(?:@\w+)?(?:\s+(.+))?$/i);
-  const naturalKeyQuery = fileQuery.match(/^claves?(?:\s+(?:de\s+)?(.+))?$/i);
-  const isPrivateKeySearch = Boolean(keyCommand || naturalKeyQuery);
-  if (isPrivateKeySearch) {
-    const query = (keyCommand ? keyCommand[1] : naturalKeyQuery[1] || '').trim();
-    const terms = normalizeSearch(query).split(/\s+/).filter(Boolean);
-    const entries = await readPrivateKeys();
-    const matches = entries.filter(entry => !terms.length || terms.every(term => normalizeSearch(entry.entity).includes(term))).sort((a,b) => a.entity.localeCompare(b.entity, 'es')).slice(0, 10);
-    if (!matches.length) return telegramSend(chatId, 'No encontré registros de claves privadas que coincidan.');
-    telegramChoices.set(key, { action:'private-unlock', items:matches.map(({id}) => ({id})), expires:Date.now() + 10 * 60 * 1000 });
-    return telegramSend(chatId, `Encontré ${matches.length} registro${matches.length === 1 ? '' : 's'} de claves privadas${query ? ` para “${query}”` : ''}:\n\n${matches.map((entry,index) => `${index+1}. ${entry.entity}`).join('\n')}\n\nRespondé con el número. Después te pediré la contraseña de ese candado.`);
-  }
-const addRequest = text.match(/^(?:\/agregar(?:@\w+)?|agregame\s+(?:info|informaci[oó]n))(?:\s+(.+))?$/i);
+  const addRequest = text.match(/^(?:\/agregar(?:@\w+)?|agregame\s+(?:info|informaci[oó]n))(?:\s+(.+))?$/i);
   if (addRequest) {
     const query = (addRequest[1] || '').trim().replace(/^(?:al?\s+archivo\s+|al?\s+|a\s+)/i, '');
     await ensureCache();
     const terms = normalizeSearch(query).split(/\s+/).filter(Boolean);
     const matches = [...cache.values()].filter(item => !terms.length || terms.every(term => normalizeSearch(`${item.name} ${item.rel}`).includes(term))).sort((a,b) => a.name.localeCompare(b.name, 'es')).slice(0,10);
-    if (!matches.length) return telegramSend(chatId, indexing ? 'Todavía estoy leyendo la biblioteca. Esperá unos segundos y repetí /agregar.' : 'No encontré archivos con ese nombre. Probá con una parte distinta del título.');
+    if (!matches.length) return send(indexing ? 'Todavía estoy leyendo la biblioteca. Esperá unos segundos y repetí §agregar.' : 'No encontré archivos con ese nombre. Probá con una parte distinta del título.');
     telegramChoices.set(key, { action:'append', items:matches.map(({id}) => ({id})), expires:Date.now() + 10 * 60 * 1000 });
-    return telegramSend(chatId, `¿A cuál archivo querés agregar información?${query ? ` (búsqueda: “${query}”)` : ''}\n\n${matches.map((item,index) => `${index+1}. ${item.name}${TELEGRAM_APPENDABLE_TEXT.has(item.ext) ? '' : ' (no admite agregar texto desde el bot)'}`).join('\n')}${cache.size > matches.length && !query ? '\n\nMostrando los primeros 10 archivos.' : ''}\n\nRespondé con el número.`);
+    return send(`¿A cuál archivo querés agregar información?${query ? ` (búsqueda: “${query}”)` : ''}\n\n${matches.map((item,index) => `${index+1}. ${item.name}${TELEGRAM_APPENDABLE_TEXT.has(item.ext) ? '' : ' (no admite agregar texto desde el bot)'}`).join('\n')}${cache.size > matches.length && !query ? '\n\nMostrando los primeros 10 archivos.' : ''}\n\nRespondé con el número.`);
   }
   const choice = telegramChoices.get(key);
   if (/^\d+$/.test(text) && choice && choice.expires > Date.now()) {
     const selected = choice.items[Number(text) - 1];
-    if (!selected) return telegramSend(chatId, `Elegí un número del 1 al ${choice.items.length}.`);
+    if (!selected) return send(`Elegí un número del 1 al ${choice.items.length}.`);
     telegramChoices.delete(key);
-    if (choice.action === 'private-unlock') {
-      telegramPending.set(key, { state:'await_private_password', id:selected.id, attempts:0, expires:Date.now() + 5 * 60 * 1000 });
-      return telegramSend(chatId, 'Mandá ahora la contraseña de ese candado. El bot intentará borrar tu mensaje de contraseña apenas lo reciba; usá solo este chat privado. La clave que te responda quedará en el historial del chat. /cancelar cancela.');
-    }
     await ensureCache();
     const item = getCachedItem(selected.id);
-    if (!item) return telegramSend(chatId, 'Ese archivo ya no está disponible. Hacé la búsqueda de nuevo.');
+    if (!item) return send('Ese archivo ya no está disponible. Hacé la búsqueda de nuevo.');
     if (choice.action === 'append') {
-      if (!TELEGRAM_APPENDABLE_TEXT.has(item.ext)) return telegramSend(chatId, `“${item.name}” no admite agregar texto desde el bot. Para proteger el formato, no hice cambios. Usá un archivo TXT, MD, CSV, TSV o LOG.`);
+      if (!TELEGRAM_APPENDABLE_TEXT.has(item.ext)) return send(`“${item.name}” no admite agregar texto desde el bot. Para proteger el formato, no hice cambios. Usá un archivo TXT, MD, CSV, TSV o LOG.`);
       telegramPending.set(key, { state:'await_text', id:item.id, expires:Date.now() + 10 * 60 * 1000 });
-      return telegramSend(chatId, `Elegiste “${item.name}”. Ahora escribí la información que querés agregar. Todavía no se guardará: primero te mostraré una vista previa para que la confirmes.`);
+      return send(`Elegiste “${item.name}”. Ahora escribí la información que querés agregar. Todavía no se guardará: primero te mostraré una vista previa para que la confirmes.`);
     }
-    if (!item.content && ['kdbx','rar','zip','doc'].includes(item.ext)) return telegramSend(chatId, `${item.name}\nEste formato no se puede leer desde el bot. Abrilo o descargalo desde la web de Archivo IT.`);
+    if (!item.content && ['kdbx','rar','zip','doc'].includes(item.ext)) return send(`${item.name}\nEste formato no se puede leer desde el bot. Abrilo o descargalo desde la web de Archivo IT.`);
     const content = item.content || await extract(item.abs, item.ext);
-    if (!content.trim()) return telegramSend(chatId, `${item.name}\nNo pude extraer texto de este archivo. Podés abrirlo o descargarlo desde la web.`);
+    if (!content.trim()) return send(`${item.name}\nNo pude extraer texto de este archivo. Podés abrirlo o descargarlo desde la web.`);
     const limit = 12000;
     const excerpt = content.length > limit ? `${content.slice(0, limit)}\n\n[Contenido recortado. Consultá el archivo completo en la web.]` : content;
-    return telegramSend(chatId, `${item.name}\n\n${excerpt}`);
+    return send(`${item.name}\n\n${excerpt}`);
   }
   const query = text.replace(/^\/buscar(?:@\w+)?\s*/i, '').trim();
-  if (!query || query.startsWith('/')) return telegramSend(chatId, 'Escribí una búsqueda, por ejemplo: backup o /buscar backup.');
+  if (!query || query.startsWith('/')) return send('Escribí una búsqueda, por ejemplo: backup o §buscar backup.');
   await ensureCache();
   const terms = normalizeSearch(query).split(/\s+/).filter(Boolean);
   const all = [...cache.values()];
@@ -523,11 +420,56 @@ const addRequest = text.match(/^(?:\/agregar(?:@\w+)?|agregame\s+(?:info|informa
     return terms.every(term => haystack.includes(term));
   }).sort((a, b) => a.name.localeCompare(b.name, 'es')).slice(0, 10);
   if (!matches.length) {
-    return telegramSend(chatId, indexing ? 'Todavía estoy leyendo los documentos. Esperá unos segundos y repetí la búsqueda.' : 'No encontré archivos que coincidan con esa búsqueda.');
+    return send(indexing ? 'Todavía estoy leyendo los documentos. Esperá unos segundos y repetí la búsqueda.' : 'No encontré archivos que coincidan con esa búsqueda.');
   }
   telegramChoices.set(key, { items: matches.map(({id}) => ({id})), expires: Date.now() + 10 * 60 * 1000 });
   const list = matches.map((item, index) => `${index + 1}. ${item.name}`).join('\n');
-  return telegramSend(chatId, `Encontré ${matches.length} coincidencia${matches.length === 1 ? '' : 's'} para “${query}”:\n\n${list}\n\nRespondé con el número para ver su contenido.`);
+  return send(`Encontré ${matches.length} coincidencia${matches.length === 1 ? '' : 's'} para “${query}”:\n\n${list}\n\nRespondé con el número para ver su contenido.`);
+}
+function handleTelegramMessage(message) {
+  if (!message || !message.from || !message.chat || message.chat.type !== 'private' || typeof message.text !== 'string') return;
+  return handleBotMessage({
+    platform: 'telegram', userId: String(message.from.id), chatId: message.chat.id, text: message.text.trim(),
+    send: (t) => telegramSend(message.chat.id, t), allowed: telegramAllowedUsers, allowEnv: 'TELEGRAM_ALLOWED_USERS'
+  });
+}
+// Bot de Discord opcional (solo mensajes directos). Token y lista permitida se configuran en Portainer.
+const discordToken = String(process.env.DISCORD_BOT_TOKEN || '').trim();
+const discordAllowedUsers = new Set(String(process.env.DISCORD_ALLOWED_USERS || '').split(/[\s,;]+/).filter(x => /^\d+$/.test(x)));
+async function discordSend(message, text) {
+  // Límite de Discord: 2000 caracteres. Se envía en bloque de código para conservar tal cual claves y símbolos (y poder copiarlos).
+  for (const chunk of splitText(text, 1850, 500)) {
+    if (!chunk.trim()) continue;
+    await message.channel.send({ content: '```\n' + chunk.replace(/```/g, '``​`') + '\n```', allowedMentions: { parse: [] } });
+  }
+}
+function handleDiscordMessage(message) {
+  if (!message || !message.author || message.author.bot || message.guild || typeof message.content !== 'string') return; // solo DM
+  // En Discord los comandos usan ! en vez de / (el cliente reserva la barra para sus propios comandos).
+  const text = message.content.trim().replace(/^!/, '/');
+  return handleBotMessage({
+    platform: 'discord', userId: String(message.author.id), chatId: message.channelId || message.author.id, text,
+    send: (t) => discordSend(message, t), allowed: discordAllowedUsers, allowEnv: 'DISCORD_ALLOWED_USERS'
+  });
+}
+async function startDiscordBot() {
+  if (!discordToken) { console.log('Bot de Discord desactivado (DISCORD_BOT_TOKEN vacío).'); return; }
+  if (!discordAllowedUsers.size) console.warn('Discord está configurado, pero falta DISCORD_ALLOWED_USERS; las consultas quedan bloqueadas.');
+  let Discord;
+  try { Discord = require('discord.js'); }
+  catch { console.error('Discord: falta la dependencia discord.js (reconstruí la imagen del Stack).'); return; }
+  const client = new Discord.Client({
+    intents: [Discord.GatewayIntentBits.DirectMessages],
+    partials: [Discord.Partials.Channel, Discord.Partials.Message]
+  });
+  client.once(Discord.Events.ClientReady, (c) => console.log('Bot de Discord conectado con consultas privadas y acceso restringido.'));
+  client.on(Discord.Events.MessageCreate, async (message) => {
+    try { await handleDiscordMessage(message); }
+    catch (error) { console.error(`Discord no pudo procesar un mensaje (${error.code || 'error'}).`); }
+  });
+  client.on(Discord.Events.Error, (error) => console.error(`Discord: error de conexión (${error.code || 'red'}).`));
+  try { await client.login(discordToken); }
+  catch (error) { console.error(`Discord no pudo iniciar (verificá el token y la salida a Internet; ${error.code || 'error'}).`); }
 }
 async function startTelegramBot() {
   if (!telegramToken) { console.log('Bot de Telegram desactivado (TELEGRAM_BOT_TOKEN vacío).'); return; }
@@ -551,7 +493,6 @@ async function startTelegramBot() {
       }
       for (const [key, value] of telegramChoices) if (value.expires <= Date.now()) telegramChoices.delete(key);
       for (const [key, value] of telegramPending) if (value.expires <= Date.now()) telegramPending.delete(key);
-      for (const [userId, value] of telegramPrivateAttempts) if (value.until <= Date.now()) telegramPrivateAttempts.delete(userId);
     } catch (error) {
       if (error.telegramCode === 409) console.error('Telegram: otro proceso está consultando este bot; revisá que no exista otro poller activo.');
       else console.error(`Telegram perdió conexión temporalmente (código ${error.telegramCode || 'red'}); reintentará.`);
@@ -562,6 +503,7 @@ async function startTelegramBot() {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Archivo IT escuchando en ${PORT}`);
   void startTelegramBot();
+  void startDiscordBot();
 });
 
 

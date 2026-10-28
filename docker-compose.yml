@@ -15,6 +15,8 @@ services:
       MAX_UPLOAD_MB: "100"
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
       TELEGRAM_ALLOWED_USERS: "${TELEGRAM_ALLOWED_USERS:-}"
+      DISCORD_BOT_TOKEN: "${DISCORD_BOT_TOKEN:-}"
+      DISCORD_ALLOWED_USERS: "${DISCORD_ALLOWED_USERS:-}"
     volumes:
       - archivo_it_data:/data
     security_opt:
