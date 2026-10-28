@@ -28,6 +28,10 @@ fs.mkdirSync(DATA, { recursive: true });
 for (const category of CATEGORIES) fs.mkdirSync(path.join(DATA, category), { recursive: true });
 const SESSION_DIR = path.join(DATA, 'sessions');
 fs.mkdirSync(SESSION_DIR, { recursive: true, mode: 0o700 });
+const PRIVATE_KEYS_DIR = path.join(DATA, '.private');
+const PRIVATE_KEYS_FILE = path.join(PRIVATE_KEYS_DIR, 'private-keys.json');
+fs.mkdirSync(PRIVATE_KEYS_DIR, { recursive: true, mode: 0o700 });
+fs.chmodSync(PRIVATE_KEYS_DIR, 0o700);
 
 class JsonSessionStore extends session.Store {
   constructor() {
@@ -85,6 +89,60 @@ app.post('/api/login', authLimiter, (req, res) => {
 app.post('/api/logout', loggedIn, (req, res) => req.session.destroy(() => res.json({ ok: true })));
 app.get('/api/me', (req, res) => res.json({ authenticated: Boolean(req.session.authenticated) }));
 
+async function readPrivateKeys() {
+  try { const data = JSON.parse(await fs.promises.readFile(PRIVATE_KEYS_FILE, 'utf8')); return Array.isArray(data) ? data : []; }
+  catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+}
+async function writePrivateKeys(records) {
+  const temp = PRIVATE_KEYS_FILE + '.' + crypto.randomBytes(6).toString('hex') + '.tmp';
+  try {
+    await fs.promises.writeFile(temp, JSON.stringify(records), { encoding:'utf8', mode:0o600 });
+    await fs.promises.rename(temp, PRIVATE_KEYS_FILE);
+  } catch (error) { await fs.promises.rm(temp, { force:true }).catch(() => {}); throw error; }
+}
+const derivePrivateKey = (password, salt) => new Promise((resolve, reject) => crypto.pbkdf2(password, salt, 310000, 32, 'sha256', (error, key) => error ? reject(error) : resolve(key)));
+app.get('/api/private-keys', loggedIn, async (req, res) => {
+  try {
+    const entries = await readPrivateKeys();
+    res.json({ entries:entries.map(({id,entity,createdAt}) => ({id,entity,createdAt})) });
+  } catch { res.status(500).json({ error:'No se pudo leer el apartado de claves privadas.' }); }
+});
+app.post('/api/private-keys', loggedIn, async (req, res) => {
+  const { entity, key, lockPassword } = req.body || {};
+  if (typeof entity !== 'string' || !entity.trim() || entity.trim().length > 120 || typeof key !== 'string' || !key.trim() || key.length > 20000 || typeof lockPassword !== 'string' || lockPassword.length < 12 || lockPassword.length > 200)
+    return res.status(400).json({ error:'Completá entidad y clave, y usá una contraseña de candado de al menos 12 caracteres.' });
+  try {
+    const salt = crypto.randomBytes(16), iv = crypto.randomBytes(12), derived = await derivePrivateKey(lockPassword, salt);
+    const cipher = crypto.createCipheriv('aes-256-gcm', derived, iv);
+    const ciphertext = Buffer.concat([cipher.update(key, 'utf8'), cipher.final()]);
+    const entries = await readPrivateKeys();
+    if (entries.length >= 500) return res.status(413).json({ error:'El apartado alcanzó el límite de 500 claves privadas.' });
+    const entry = { id:crypto.randomUUID(), entity:entity.trim(), salt:salt.toString('base64'), iv:iv.toString('base64'), tag:cipher.getAuthTag().toString('base64'), ciphertext:ciphertext.toString('base64'), createdAt:new Date().toISOString() };
+    entries.push(entry); await writePrivateKeys(entries);
+    return res.status(201).json({ entry:{id:entry.id,entity:entry.entity,createdAt:entry.createdAt} });
+  } catch { return res.status(500).json({ error:'No se pudo guardar la clave privada.' }); }
+});
+const privateUnlockLimiter = rateLimit({ windowMs:15*60*1000, limit:10, standardHeaders:true, legacyHeaders:false, message:{error:'Demasiados intentos. Esperá 15 minutos y volvé a probar.'} });
+app.post('/api/private-keys/:id/unlock', loggedIn, privateUnlockLimiter, async (req, res) => {
+  const password = req.body && req.body.lockPassword;
+  if (typeof password !== 'string' || password.length > 200) return res.status(400).json({ error:'Contraseña inválida.' });
+  try {
+    const entries = await readPrivateKeys(), entry = entries.find(item => item.id === req.params.id);
+    if (!entry) return res.sendStatus(404);
+    const derived = await derivePrivateKey(password, Buffer.from(entry.salt, 'base64'));
+    const decipher = crypto.createDecipheriv('aes-256-gcm', derived, Buffer.from(entry.iv, 'base64'));
+    decipher.setAuthTag(Buffer.from(entry.tag, 'base64'));
+    const value = Buffer.concat([decipher.update(Buffer.from(entry.ciphertext, 'base64')), decipher.final()]).toString('utf8');
+    return res.json({ key:value });
+  } catch { return res.status(401).json({ error:'La contraseña no coincide.' }); }
+});
+app.delete('/api/private-keys/:id', loggedIn, async (req, res) => {
+  try {
+    const entries = await readPrivateKeys(), remaining = entries.filter(entry => entry.id !== req.params.id);
+    if (remaining.length === entries.length) return res.sendStatus(404);
+    await writePrivateKeys(remaining); return res.json({ ok:true });
+  } catch { return res.status(500).json({ error:'No se pudo eliminar la clave privada.' }); }
+});
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const paths = req.body.sourcePath;
