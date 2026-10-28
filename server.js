@@ -542,6 +542,12 @@ async function handleBotMessage(ctx) {
     const selected = choice.items[Number(text) - 1];
     if (!selected) return send(`Elegí un número del 1 al ${choice.items.length}.`);
     telegramChoices.delete(key);
+    if (choice.action === 'private_key') {
+      const entry = (await readPrivateKeys()).find(record => record.id === selected.id);
+      if (!entry) return send('Esa clave ya no está disponible. Volvé a buscarla.');
+      telegramPending.set(key, { state:'await_private_password', id:entry.id, expires:Date.now() + 5 * 60 * 1000 });
+      return send(`Elegiste “${entry.entity}”. Escribí ahora la contraseña que configuraste para esta clave privada. No se mostrará en el chat. Usá §cancelar para salir.`);
+    }
     await ensureCache();
     const item = getCachedItem(selected.id);
     if (!item) return send('Ese archivo ya no está disponible. Hacé la búsqueda de nuevo.');
@@ -549,12 +555,6 @@ async function handleBotMessage(ctx) {
       if (!TELEGRAM_APPENDABLE_TEXT.has(item.ext)) return send(`“${item.name}” no admite agregar texto desde el bot. Para proteger el formato, no hice cambios. Usá un archivo TXT, MD, CSV, TSV o LOG.`);
       telegramPending.set(key, { state:'await_text', id:item.id, expires:Date.now() + 10 * 60 * 1000 });
       return send(`Elegiste “${item.name}”. Ahora escribí la información que querés agregar. Todavía no se guardará: primero te mostraré una vista previa para que la confirmes.`);
-    }
-    if (choice.action === 'private_key') {
-      const entry = (await readPrivateKeys()).find(record => record.id === selected.id);
-      if (!entry) return send('Esa clave ya no está disponible. Volvé a buscarla.');
-      telegramPending.set(key, { state:'await_private_password', id:entry.id, expires:Date.now() + 5 * 60 * 1000 });
-      return send(`Elegiste “${entry.entity}”. Escribí ahora la contraseña que configuraste para esta clave privada. No se mostrará en el chat. Usá §cancelar para salir.`);
     }
     if (!item.content && ['kdbx','rar','zip','doc'].includes(item.ext)) return send(`${item.name}\nEste formato no se puede leer desde el bot. Abrilo o descargalo desde la web de Archivo IT.`);
     const content = item.content || await extract(item.abs, item.ext);
