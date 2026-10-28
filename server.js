@@ -101,6 +101,12 @@ async function writePrivateKeys(records) {
   } catch (error) { await fs.promises.rm(temp, { force:true }).catch(() => {}); throw error; }
 }
 const derivePrivateKey = (password, salt) => new Promise((resolve, reject) => crypto.pbkdf2(password, salt, 310000, 32, 'sha256', (error, key) => error ? reject(error) : resolve(key)));
+async function decryptPrivateKey(entry, password) {
+  const derived = await derivePrivateKey(password, Buffer.from(entry.salt, 'base64'));
+  const decipher = crypto.createDecipheriv('aes-256-gcm', derived, Buffer.from(entry.iv, 'base64'));
+  decipher.setAuthTag(Buffer.from(entry.tag, 'base64'));
+  return Buffer.concat([decipher.update(Buffer.from(entry.ciphertext, 'base64')), decipher.final()]).toString('utf8');
+}
 app.get('/api/private-keys', loggedIn, async (req, res) => {
   try {
     const entries = await readPrivateKeys();
@@ -129,10 +135,7 @@ app.post('/api/private-keys/:id/unlock', loggedIn, privateUnlockLimiter, async (
   try {
     const entries = await readPrivateKeys(), entry = entries.find(item => item.id === req.params.id);
     if (!entry) return res.sendStatus(404);
-    const derived = await derivePrivateKey(password, Buffer.from(entry.salt, 'base64'));
-    const decipher = crypto.createDecipheriv('aes-256-gcm', derived, Buffer.from(entry.iv, 'base64'));
-    decipher.setAuthTag(Buffer.from(entry.tag, 'base64'));
-    const value = Buffer.concat([decipher.update(Buffer.from(entry.ciphertext, 'base64')), decipher.final()]).toString('utf8');
+    const value = await decryptPrivateKey(entry, password);
     return res.json({ key:value });
   } catch { return res.status(401).json({ error:'La contraseña no coincide.' }); }
 });
@@ -357,6 +360,7 @@ const telegramToken = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
 const telegramAllowedUsers = new Set(String(process.env.TELEGRAM_ALLOWED_USERS || '').split(/[\s,;]+/).filter(x => /^\d+$/.test(x)));
 const telegramChoices = new Map();
 const telegramPending = new Map();
+const telegramPrivateAttempts = new Map();
 const telegramApi = telegramToken ? `https://api.telegram.org/bot${telegramToken}` : '';
 function normalizeSearch(value) {
   return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase();
@@ -423,6 +427,7 @@ async function handleVoiceMessage(ctx, getAudio, { duration = 0, size = 0 } = {}
   const key = `${ctx.platform}:${ctx.chatId}:${ctx.userId}`;
   const pending = telegramPending.get(key);
   const active = pending && pending.expires > Date.now() ? pending : null;
+  if (active && active.state === 'await_private_password') return send('Por seguridad, escribí la contraseña de la clave en un mensaje; no la envíes como audio.');
   // Cambios en archivos: la confirmación siempre se escribe, nunca se acepta por voz.
   if (active && active.state === 'confirm') return send('Por seguridad, confirmá escribiendo §confirmar (o §cancelar). No acepto confirmaciones por voz.');
   let transcript;
@@ -456,6 +461,27 @@ async function handleBotMessage(ctx) {
     return send('Listo, cancelé la operación y descarté el texto pendiente.');
   }
   const pending = telegramPending.get(key);
+  if (pending && pending.expires > Date.now() && pending.state === 'await_private_password') {
+    if (!text || text.length > 200) return send('La contraseña no es válida. Escribila de nuevo o usá §cancelar.');
+    // Evita que Telegram conserve el mensaje con la contraseña si permite borrarlo.
+    if (typeof ctx.deleteInput === 'function') await ctx.deleteInput().catch(() => {});
+    const attemptsKey = `${key}:${pending.id}`;
+    const attempts = telegramPrivateAttempts.get(attemptsKey) || { count:0, expires:Date.now() + 15 * 60 * 1000 };
+    if (attempts.expires <= Date.now()) { attempts.count = 0; attempts.expires = Date.now() + 15 * 60 * 1000; }
+    if (attempts.count >= 5) { telegramPending.delete(key); return send('Se alcanzó el máximo de intentos para esta clave. Volvé a buscarla más tarde.'); }
+    try {
+      const entries = await readPrivateKeys();
+      const entry = entries.find(item => item.id === pending.id);
+      if (!entry) { telegramPending.delete(key); return send('Esa clave ya no está disponible.'); }
+      const value = await decryptPrivateKey(entry, text);
+      telegramPrivateAttempts.delete(attemptsKey); telegramPending.delete(key);
+      return send(`🔐 ${entry.entity}\n\n${value}`);
+    } catch {
+      attempts.count++; telegramPrivateAttempts.set(attemptsKey, attempts);
+      if (attempts.count >= 5) { telegramPending.delete(key); return send('La contraseña no coincide. Se alcanzó el máximo de 5 intentos; volvé a buscar la clave más tarde.'); }
+      return send(`La contraseña no coincide. Intento ${attempts.count} de 5. Probá de nuevo o usá §cancelar.`);
+    }
+  }
   if (pending && pending.expires > Date.now() && pending.state === 'await_text') {
     if (!text) return send('Mandame el texto que querés agregar o escribí §cancelar.');
     if (text.length > 20000) return send('El texto supera el máximo de 20.000 caracteres. Mandá una versión más corta o escribí §cancelar.');
@@ -487,6 +513,20 @@ async function handleBotMessage(ctx) {
     return send('Todavía no guardé nada. Respondé §confirmar para agregarlo o §cancelar para descartarlo.');
   }
   if (pending) telegramPending.delete(key);
+  const normalizedPrivateQuery = normalizeSearch(text.replace(/^\/(?:buscar|clave|claves)(?:@\w+)?\s*/i, '').trim());
+  const asksPrivateKey = /\bclaves?\b/.test(normalizeSearch(text)) || /\bclave privada\b/.test(normalizeSearch(text));
+  if (asksPrivateKey) {
+    const query = normalizedPrivateQuery.replace(/\b(?:por favor|buscame|busca|buscar|decime|dame|traeme|mostrame|consulta|consultar|quiero|ver|la|las|el|los|de|del|privada|privadas|clave|claves)\b/g, ' ').replace(/\s+/g, ' ').trim();
+    const entries = await readPrivateKeys();
+    const terms = query.split(/\s+/).filter(Boolean);
+    const matches = entries.filter(entry => !terms.length || terms.every(term => normalizeSearch(entry.entity).includes(term))).sort((a,b) => a.entity.localeCompare(b.entity, 'es')).slice(0,10);
+    if (matches.length) {
+      telegramChoices.set(key, { action:'private_key', items:matches.map(({id,entity}) => ({id,entity})), expires:Date.now() + 10 * 60 * 1000 });
+      return send(`Encontré estas claves privadas${query ? ` para “${query}”` : ''}:\n\n${matches.map((entry,index) => `${index+1}. ${entry.entity}`).join('\n')}\n\nElegí el número. Antes de mostrar el valor te voy a pedir la contraseña que configuraste para esa clave.`);
+    }
+    if (entries.length) return send('No encontré una clave privada con ese nombre. Probá con otra parte de la entidad.');
+    // Si no hay entradas privadas, continúa la búsqueda común de documentos.
+  }
   const addRequest = text.match(/^(?:\/agregar(?:@\w+)?|agregame\s+(?:info|informaci[oó]n))(?:\s+(.+))?$/i);
   if (addRequest) {
     const query = (addRequest[1] || '').trim().replace(/^(?:al?\s+archivo\s+|al?\s+|a\s+)/i, '');
@@ -509,6 +549,12 @@ async function handleBotMessage(ctx) {
       if (!TELEGRAM_APPENDABLE_TEXT.has(item.ext)) return send(`“${item.name}” no admite agregar texto desde el bot. Para proteger el formato, no hice cambios. Usá un archivo TXT, MD, CSV, TSV o LOG.`);
       telegramPending.set(key, { state:'await_text', id:item.id, expires:Date.now() + 10 * 60 * 1000 });
       return send(`Elegiste “${item.name}”. Ahora escribí la información que querés agregar. Todavía no se guardará: primero te mostraré una vista previa para que la confirmes.`);
+    }
+    if (choice.action === 'private_key') {
+      const entry = (await readPrivateKeys()).find(record => record.id === selected.id);
+      if (!entry) return send('Esa clave ya no está disponible. Volvé a buscarla.');
+      telegramPending.set(key, { state:'await_private_password', id:entry.id, expires:Date.now() + 5 * 60 * 1000 });
+      return send(`Elegiste “${entry.entity}”. Escribí ahora la contraseña que configuraste para esta clave privada. No se mostrará en el chat. Usá §cancelar para salir.`);
     }
     if (!item.content && ['kdbx','rar','zip','doc'].includes(item.ext)) return send(`${item.name}\nEste formato no se puede leer desde el bot. Abrilo o descargalo desde la web de Archivo IT.`);
     const content = item.content || await extract(item.abs, item.ext);
@@ -543,7 +589,9 @@ function handleTelegramMessage(message) {
   if (!message || !message.from || !message.chat || message.chat.type !== 'private') return;
   const ctx = {
     platform: 'telegram', userId: String(message.from.id), chatId: message.chat.id,
-    send: (t) => telegramSend(message.chat.id, t), allowed: telegramAllowedUsers, allowEnv: 'TELEGRAM_ALLOWED_USERS'
+    send: (t) => telegramSend(message.chat.id, t),
+    deleteInput: () => telegramCall('deleteMessage', { chat_id:message.chat.id, message_id:message.message_id }),
+    allowed: telegramAllowedUsers, allowEnv: 'TELEGRAM_ALLOWED_USERS'
   };
   if (typeof message.text === 'string') return handleBotMessage({ ...ctx, text: message.text.trim() });
   const audio = message.voice || message.audio;

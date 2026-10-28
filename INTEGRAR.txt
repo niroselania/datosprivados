@@ -1,7 +1,9 @@
-Corrección de “Ruta inexistente” en Claves privadas
+Corrección de “Ruta inexistente” y acceso de claves privadas desde el bot
 
-Este server.js corresponde a la variante Archivo IT Voz que ya tenías en Downloads/archivo-it-voz. Conserva sus funciones existentes de Discord y voz; agrega únicamente el almacenamiento protegido y las rutas API necesarias para listar, guardar, desbloquear y eliminar claves privadas.
+Este server.js corresponde a la variante Archivo IT Voz que ya tenías en Downloads/archivo-it-voz. Conserva sus funciones existentes de Discord y voz; incluye las rutas API y almacenamiento cifrado de claves privadas, además del flujo de consulta protegida del bot.
 
-Integración: reemplazá el server.js de tu repositorio completo por este archivo y redeplegá el Stack en Portainer. Conservá el volumen archivo_it_data; allí se guardan las claves cifradas.
+Uso desde Telegram o Discord: escribí “clave” o “clave [entidad]”, elegí el número de la entidad y luego ingresá la contraseña que configuraste para esa clave en la web. El bot recién muestra el valor si la contraseña coincide. En Telegram intenta borrar el mensaje con la contraseña y no acepta contraseñas por audio. /cancelar (Telegram) o !cancelar (Discord) cancela el paso.
 
-La carpeta local que revisamos contenía docker-compose.yml, package.json, README.md y server.js, pero no Dockerfile ni public/. Usá este archivo dentro del repositorio completo que Portainer construye; este ZIP es un reemplazo de server.js, no el proyecto completo.
+Integración: reemplazá el server.js del repositorio completo por este archivo y redeplegá el Stack en Portainer. Conservá el volumen archivo_it_data; allí se guardan las claves cifradas.
+
+La carpeta local que revisamos contenía docker-compose.yml, package.json, README.md y server.js, pero no Dockerfile ni public/. Usá este archivo dentro del repositorio completo que Portainer construye; este ZIP reemplaza server.js, no es el proyecto completo. No compartas .env, tokens, claves ni datos privados.
