@@ -20,6 +20,7 @@ Aplicación web privada para subir documentos, buscar dentro de TXT, Word (.docx
    - `TELEGRAM_ALLOWED_USERS`: IDs numéricos de Telegram autorizados, separados por coma. Es obligatorio para consultar datos desde el bot.
    - `DISCORD_BOT_TOKEN`: token del bot de Discord (Developer Portal > Bot). Es opcional; cargalo solo como variable del Stack, nunca en GitHub.
    - `DISCORD_ALLOWED_USERS`: IDs de usuario de Discord autorizados, separados por coma. Es obligatorio para consultar datos desde el bot.
+   - `WHISPER_URL` y `WHISPER_TOKEN`: opcionales, para consultar por mensaje de voz (ver *Búsqueda por voz*).
    El Compose toma estos valores directamente del formulario del Stack. Si falta alguno, el contenedor mostrará un error de configuración en sus logs.
 4. Desplegá el Stack. El volumen `archivo_it_data` se crea automáticamente y sobrevive a recreaciones del contenedor.
 5. El puerto se publica como `${APP_PORT:-9090}` para acceder desde otras PCs de la red local usando `http://IP-DEL-SERVIDOR:9090`. El valor predeterminado `COOKIE_SECURE=0` permite iniciar sesión por HTTP durante pruebas en una red confiable. Para usar un proxy inverso con HTTPS, configurá `COOKIE_SECURE=1` y reenviá al puerto del servidor. No expongas el puerto directamente a Internet; para acceso remoto usá HTTPS y VPN.
@@ -43,6 +44,16 @@ Funciona igual que el de Telegram (misma búsqueda, mismo `agregar` con confirma
 5. Uso: escribí `backup` o `!buscar backup`, respondé con el número para ver el contenido, y `!agregar`, `!confirmar`, `!cancelar` para sumar texto. En Discord los comandos usan `!` (la barra `/` la reserva Discord). Las respuestas llegan en bloque de código para conservar claves y símbolos exactos y poder copiarlos.
 
 Como Telegram, el bot de Discord se conecta hacia afuera (no necesita abrir puertos). Si cambiás `package.json`, hay que **reconstruir la imagen** (Redeploy con *Re-pull image / rebuild*).
+
+## Búsqueda por voz (opcional)
+
+Con el servicio Whisper instalado (stack aparte `whisper`), podés mandar un **mensaje de voz** al bot de Telegram o de Discord (por mensaje directo) y lo transcribe y busca como si lo hubieras escrito.
+
+1. Desplegá el stack `whisper` y anotá su dirección, por ejemplo `http://IP-DEL-SERVIDOR:9000`.
+2. En este Stack agregá `WHISPER_URL` (esa dirección) y `WHISPER_TOKEN` (la misma clave del stack whisper), y redeplegá.
+3. Mantené apretado el micrófono y decí, por ejemplo, "buscá backup". El bot responde "🎙 Entendí: …" y los resultados. Si el audio dura más de 60 segundos (`VOICE_MAX_SECONDS`) lo rechaza.
+
+Reglas de seguridad: solo atiende a IDs autorizados. Si estás dictando texto para `agregar`, el audio se toma como el texto a agregar, pero la confirmación **siempre** se escribe (`/confirmar` o `!confirmar`); por voz no se acepta.
 
 El bot solo atiende chats privados y solo IDs autorizados. Admite el contenido indexable (texto, CSV, Word DOCX, Excel y PDF con texto). No descifra KeePass ni lee ZIP/RAR o Word DOC antiguo. Para esos formatos, indica usar la web. La función de agregar añade al final únicamente de TXT, MD, CSV, TSV y LOG; otros formatos se protegen para evitar corromperlos.
 

@@ -331,11 +331,60 @@ async function telegramSend(chatId, text) {
   // Telegram admite hasta 4096 caracteres; se mantiene margen para evitar rechazos.
   for (const chunk of splitText(text, 3500, 1000)) await telegramCall('sendMessage', { chat_id: chatId, text: chunk, disable_web_page_preview: true });
 }
+const wrapSend = (ctx) => (t) => ctx.send(String(t).replace(/§(buscar|agregar|confirmar|cancelar)/g, (ctx.platform === 'discord' ? '!' : '/') + '$1'));
+// ---- Voz: el audio se transcribe con un servicio Whisper aparte (WHISPER_URL) ----
+const whisperUrl = String(process.env.WHISPER_URL || '').trim().replace(/\/+$/, '');
+const whisperToken = String(process.env.WHISPER_TOKEN || '').trim();
+const VOICE_MAX_SECONDS = Math.max(5, Number(process.env.VOICE_MAX_SECONDS || 60));
+const VOICE_MAX_BYTES = 10 * 1024 * 1024;
+class VoiceError extends Error {}
+async function transcribeAudio(buffer) {
+  let response;
+  try {
+    response = await fetch(`${whisperUrl}/transcribe`, {
+      method: 'POST', body: buffer, signal: AbortSignal.timeout(180000),
+      headers: { 'content-type': 'application/octet-stream', ...(whisperToken ? { authorization: `Bearer ${whisperToken}` } : {}) }
+    });
+  } catch { throw new VoiceError('No pude conectar con el servicio de voz (Whisper). Probá de nuevo en un rato.'); }
+  const data = await response.json().catch(() => ({}));
+  if (response.status === 401) throw new VoiceError('El servicio de voz rechazó la clave (revisá WHISPER_TOKEN).');
+  if (!response.ok) throw new VoiceError(String(data.error || `El servicio de voz respondió con error ${response.status}.`).slice(0, 200));
+  return String(data.text || '').trim();
+}
+// "Buscá a backup." -> "backup" (saca el verbo inicial y la puntuación de los bordes)
+function cleanVoiceQuery(text) {
+  const filler = /^\s*(?:(?:por\s+favor|hola|che)[\s,]+)*(?:busc[aá](?:r|me|lo)?|dame|dec[ií]me|tra[eé](?:me|r)?|mostr[aá](?:me|r)?|consult[aá](?:r|me)?|quiero\s+ver|necesito)(?:\s+(?:a|al|el|la|los|las|de|del|info|informaci[oó]n\s+de(?:l)?))*\s+/i;
+  return String(text || '').replace(filler, '').replace(/^[\s.,;:!?¿¡"'«»]+|[\s.,;:!?¿¡"'«»]+$/g, '');
+}
+async function handleVoiceMessage(ctx, getAudio, { duration = 0, size = 0 } = {}) {
+  if (!ctx.allowed.has(ctx.userId)) return; // sin respuesta a usuarios no autorizados
+  const send = wrapSend(ctx);
+  if (!whisperUrl) return send('La búsqueda por voz no está configurada. Escribime la consulta.');
+  if (duration > VOICE_MAX_SECONDS) return send(`El audio es muy largo (máximo ${VOICE_MAX_SECONDS} segundos).`);
+  if (size > VOICE_MAX_BYTES) return send('El audio es demasiado pesado.');
+  const key = `${ctx.platform}:${ctx.chatId}:${ctx.userId}`;
+  const pending = telegramPending.get(key);
+  const active = pending && pending.expires > Date.now() ? pending : null;
+  // Cambios en archivos: la confirmación siempre se escribe, nunca se acepta por voz.
+  if (active && active.state === 'confirm') return send('Por seguridad, confirmá escribiendo §confirmar (o §cancelar). No acepto confirmaciones por voz.');
+  let transcript;
+  try { transcript = await transcribeAudio(await getAudio()); }
+  catch (error) {
+    if (error instanceof VoiceError) return send(error.message);
+    console.error(`No pude procesar un audio (${ctx.platform}).`);
+    return send('No pude procesar ese audio. Probá de nuevo o escribime la consulta.');
+  }
+  // Si estaba dictando texto para agregar, se usa tal cual; si no, se lo trata como una búsqueda.
+  const text = active && active.state === 'await_text' ? transcript : cleanVoiceQuery(transcript);
+  if (!text) return send('No pude entender el audio. Probá de nuevo, hablando cerca y más despacio.');
+  await send(`🎙 Entendí: «${transcript}»`);
+  return handleBotMessage({ ...ctx, text });
+}
 // Handler compartido por Telegram y Discord. ctx = { platform, userId, chatId, text, send, allowed, allowEnv }
 // En los textos fijos, §comando se muestra como /comando (Telegram) o !comando (Discord).
 async function handleBotMessage(ctx) {
   const { platform, userId, chatId, text, allowed, allowEnv } = ctx;
-  const send = (t) => ctx.send(String(t).replace(/§(buscar|agregar|confirmar|cancelar)/g, (platform === 'discord' ? '!' : '/') + '$1'));
+  const send = wrapSend(ctx);
   if (/^\/id(?:@\w+)?(?:\s|$)/i.test(text)) {
     return send(`Tu ID de ${platform === 'discord' ? 'Discord' : 'Telegram'} es: ${userId}\nAgregalo en Portainer como ${allowEnv} y redeplegá el Stack.`);
   }
@@ -426,12 +475,21 @@ async function handleBotMessage(ctx) {
   const list = matches.map((item, index) => `${index + 1}. ${item.name}`).join('\n');
   return send(`Encontré ${matches.length} coincidencia${matches.length === 1 ? '' : 's'} para “${query}”:\n\n${list}\n\nRespondé con el número para ver su contenido.`);
 }
+async function telegramDownload(fileId) {
+  const file = await telegramCall('getFile', { file_id: fileId });
+  const response = await fetch(`https://api.telegram.org/file/bot${telegramToken}/${file.file_path}`, { signal: AbortSignal.timeout(30000) });
+  if (!response.ok) throw new Error('descarga fallida');
+  return Buffer.from(await response.arrayBuffer());
+}
 function handleTelegramMessage(message) {
-  if (!message || !message.from || !message.chat || message.chat.type !== 'private' || typeof message.text !== 'string') return;
-  return handleBotMessage({
-    platform: 'telegram', userId: String(message.from.id), chatId: message.chat.id, text: message.text.trim(),
+  if (!message || !message.from || !message.chat || message.chat.type !== 'private') return;
+  const ctx = {
+    platform: 'telegram', userId: String(message.from.id), chatId: message.chat.id,
     send: (t) => telegramSend(message.chat.id, t), allowed: telegramAllowedUsers, allowEnv: 'TELEGRAM_ALLOWED_USERS'
-  });
+  };
+  if (typeof message.text === 'string') return handleBotMessage({ ...ctx, text: message.text.trim() });
+  const audio = message.voice || message.audio;
+  if (audio) return handleVoiceMessage(ctx, () => telegramDownload(audio.file_id), { duration: audio.duration, size: audio.file_size });
 }
 // Bot de Discord opcional (solo mensajes directos). Token y lista permitida se configuran en Portainer.
 const discordToken = String(process.env.DISCORD_BOT_TOKEN || '').trim();
@@ -444,13 +502,19 @@ async function discordSend(message, text) {
   }
 }
 function handleDiscordMessage(message) {
-  if (!message || !message.author || message.author.bot || message.guild || typeof message.content !== 'string') return; // solo DM
-  // En Discord los comandos usan ! en vez de / (el cliente reserva la barra para sus propios comandos).
-  const text = message.content.trim().replace(/^!/, '/');
-  return handleBotMessage({
-    platform: 'discord', userId: String(message.author.id), chatId: message.channelId || message.author.id, text,
+  if (!message || !message.author || message.author.bot || message.guild) return; // solo DM
+  const ctx = {
+    platform: 'discord', userId: String(message.author.id), chatId: message.channelId || message.author.id,
     send: (t) => discordSend(message, t), allowed: discordAllowedUsers, allowEnv: 'DISCORD_ALLOWED_USERS'
-  });
+  };
+  const content = typeof message.content === 'string' ? message.content.trim() : '';
+  if (content) return handleBotMessage({ ...ctx, text: content.replace(/^!/, '/') }); // los comandos usan ! en Discord
+  const audio = message.attachments && [...message.attachments.values()].find(a => String(a.contentType || '').startsWith('audio/'));
+  if (audio) return handleVoiceMessage(ctx, async () => {
+    const response = await fetch(audio.url, { signal: AbortSignal.timeout(30000) });
+    if (!response.ok) throw new Error('descarga fallida');
+    return Buffer.from(await response.arrayBuffer());
+  }, { duration: audio.duration || 0, size: audio.size || 0 });
 }
 async function startDiscordBot() {
   if (!discordToken) { console.log('Bot de Discord desactivado (DISCORD_BOT_TOKEN vacío).'); return; }
