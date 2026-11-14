@@ -214,29 +214,54 @@ async function walk(dir, output = []) {
   return output;
 }
 const cache = new Map();
+// Texto ya extraído por archivo (ruta + fecha + tamaño). Evita releer todo cada 5 minutos.
+const contentStore = new Map();
 let cacheAt = 0, indexing = false, refreshPromise = null;
+// Normaliza sin acentos ni mayúsculas conservando la longitud, para ubicar fragmentos en el texto original.
+function foldKeep(value) {
+  return String(value || '').replace(/[^\x00-\x7f]/g, ch => {
+    const f = ch.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    if (f.length === 1) return f;
+    const l = ch.toLowerCase();
+    return l.length === 1 ? l : ch;
+  }).replace(/[A-Z]/g, c => c.toLowerCase());
+}
+function setItemContent(item, content) {
+  item.content = content || '';
+  item.contentN = foldKeep(item.content);
+  item.words = null;
+  contentStore.set(item.abs, { mtime:item.mtime, size:item.size, content:item.content, contentN:item.contentN });
+}
 async function ensureCache() {
   if (refreshPromise) { await refreshPromise; return; }
   if (indexing && cacheAt) return;
   if (cacheAt && Date.now() - cacheAt <= 300000) return;
   refreshPromise = (async () => {
-    cache.clear();
     const paths = await walk(DATA);
     const entries = [];
     for (const abs of paths) {
-      const stat = await fs.promises.stat(abs); const rel = path.relative(DATA, abs);
+      let stat; try { stat = await fs.promises.stat(abs); } catch { continue; }
+      const rel = path.relative(DATA, abs);
       const ext = path.extname(abs).slice(1).toLowerCase();
       const originalName = path.basename(abs).replace(/__[0-9TZ-]+_[a-f0-9]{6}(?=\.|$)/, '');
       const cat = categoryFor(rel) === 'Otros' ? categoryGuess(rel) : categoryFor(rel);
-      const item = { id:crypto.createHash('sha256').update(abs).digest('hex'), abs, rel, name:originalName, ext, type:fileType(ext), category:cat, size:stat.size, mtime:stat.mtimeMs, content:'' };
-      cache.set(abs, item); entries.push(item);
+      const item = { id:crypto.createHash('sha256').update(abs).digest('hex'), abs, rel, name:originalName, ext, type:fileType(ext), category:cat, size:stat.size, mtime:stat.mtimeMs, content:'', contentN:'', nameN:foldKeep(originalName), relN:foldKeep(rel), catN:foldKeep(cat), words:null, indexed:false };
+      const known = contentStore.get(abs);
+      if (known && known.mtime === item.mtime && known.size === item.size) { item.content = known.content; item.contentN = known.contentN; item.indexed = true; }
+      entries.push(item);
     }
-    cacheAt = Date.now(); indexing = true;
-    const toIndex = entries.filter(x => ALLOWED.has(x.ext) && !['kdbx','rar','zip','doc'].includes(x.ext));
+    const alive = new Set(paths);
+    for (const abs of contentStore.keys()) if (!alive.has(abs)) contentStore.delete(abs);
+    cache.clear();
+    for (const item of entries) cache.set(item.abs, item);
+    cacheAt = Date.now();
+    const toIndex = entries.filter(x => !x.indexed && ALLOWED.has(x.ext) && !['kdbx','rar','zip','doc'].includes(x.ext));
+    if (!toIndex.length) return;
+    indexing = true;
     (async () => {
       try {
         for (let i = 0; i < toIndex.length; i += 2) {
-          await Promise.all(toIndex.slice(i, i + 2).map(async item => { item.content = await extract(item.abs, item.ext); }));
+          await Promise.all(toIndex.slice(i, i + 2).map(async item => { setItemContent(item, await extract(item.abs, item.ext)); item.indexed = true; }));
         }
       } catch (e) { console.error('Error al indexar archivos:', e.message); }
       finally { indexing = false; cacheAt = Date.now(); }
@@ -244,21 +269,171 @@ async function ensureCache() {
   })().finally(() => { refreshPromise = null; });
   await refreshPromise;
 }
+// ---- Motor de búsqueda compartido por la web y los bots ----
+// Admite: varias palabras (todas deben aparecer), "frase exacta", -excluir, tipo:pdf / ext:xlsx, cat:procedimientos.
+const TYPE_ALIASES = { pdf:'PDF', word:'Word', docx:'Word', excel:'Excel', planilla:'Excel', xlsx:'Excel', csv:'Excel', texto:'Texto', txt:'Texto', vault:'Vault', keepass:'Vault', kdbx:'Vault', otros:'Otros' };
+function parseQuery(raw) {
+  const q = { terms:[], phrases:[], exclude:[], exts:[], types:[], cats:[] };
+  const re = /(-?)"([^"]*)"?|(\S+)/g; let m;
+  const text = String(raw || '').slice(0, 300);
+  while ((m = re.exec(text))) {
+    if (m[2] !== undefined) {
+      const v = foldKeep(m[2]).trim().replace(/\s+/g, ' ');
+      if (!v) continue;
+      if (m[1]) q.exclude.push(v); else if (v.includes(' ')) q.phrases.push(v); else q.terms.push(v);
+      continue;
+    }
+    let token = foldKeep(m[3]);
+    const f = token.match(/^(tipo|type|ext|cat|categoria):(.+)$/);
+    if (f) {
+      const val = f[2];
+      if (f[1] === 'ext') q.exts.push(val.replace(/^\./, ''));
+      else if (f[1] === 'cat' || f[1] === 'categoria') q.cats.push(val);
+      else if (TYPE_ALIASES[val]) q.types.push(TYPE_ALIASES[val]); else q.exts.push(val);
+      continue;
+    }
+    token = token.replace(/^[.,;:!?¿¡()\[\]{}'«»]+|[.,;:!?¿¡()\[\]{}'«»]+$/g, '');
+    if (!token) continue;
+    if (token.startsWith('-') && token.length > 1) q.exclude.push(token.slice(1)); else if (token !== '-') q.terms.push(token);
+  }
+  q.terms = [...new Set(q.terms)];
+  return q;
+}
+function countOccurrences(hay, needle, max = 25) {
+  if (!needle) return 0; let n = 0, i = hay.indexOf(needle);
+  while (i !== -1 && n < max) { n++; i = hay.indexOf(needle, i + needle.length); }
+  return n;
+}
+function wordStart(hay, needle) {
+  let i = hay.indexOf(needle);
+  while (i !== -1) { if (i === 0 || !/[a-z0-9ñ]/.test(hay[i - 1])) return true; i = hay.indexOf(needle, i + 1); }
+  return false;
+}
+function editDistance(a, b, max) {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev = Array.from({ length:b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i]; let best = i;
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (cur[j] < best) best = cur[j];
+    }
+    if (best > max) return max + 1;
+    prev = cur;
+  }
+  return prev[b.length];
+}
+function itemWords(item) {
+  if (!item.words) {
+    const set = new Set();
+    for (const src of [item.nameN, item.relN, item.contentN]) for (const w of src.split(/[^a-z0-9ñ_]+/)) { if (w.length >= 3 && w.length <= 40) set.add(w); if (set.size >= 30000) break; }
+    item.words = set;
+  }
+  return item.words;
+}
+// Para tolerar errores de tipeo: devuelve la palabra real más parecida del archivo.
+function fuzzyWord(item, term) {
+  if (term.length < 4) return null;
+  const max = term.length >= 8 ? 2 : 1;
+  let best = null, bestD = max + 1;
+  for (const w of itemWords(item)) {
+    if (Math.abs(w.length - term.length) > max) continue;
+    const d = editDistance(term, w, max);
+    if (d < bestD) { best = w; bestD = d; if (d === 1 && max === 1) break; }
+  }
+  return best;
+}
+function scoreItem(item, q, fuzzy) {
+  const hay = `${item.nameN} ${item.relN} ${item.catN} ${item.contentN}`;
+  for (const ex of q.exclude) if (hay.includes(ex)) return null;
+  let score = 0; const matched = [];
+  for (const ph of q.phrases) {
+    if (!hay.includes(ph)) return null;
+    matched.push(ph);
+    score += item.nameN.includes(ph) ? 60 : 0;
+    score += 12 + Math.min(countOccurrences(item.contentN, ph), 10) * 3;
+  }
+  let allInName = q.terms.length > 0;
+  for (const original of q.terms) {
+    let term = original;
+    if (!hay.includes(term)) {
+      if (!fuzzy) return null;
+      term = fuzzyWord(item, original);
+      if (!term) return null;
+      score -= 8;
+    }
+    matched.push(term);
+    if (item.nameN.includes(term)) { score += 30; if (wordStart(item.nameN, term)) score += 15; if (item.nameN.replace(/\.[^.]+$/, '') === term) score += 40; }
+    else allInName = false;
+    if (item.relN.includes(term)) score += 6;
+    if (item.catN.includes(term)) score += 4;
+    const c = countOccurrences(item.contentN, term);
+    if (c) score += 8 + Math.min(c, 15) * 2 + (wordStart(item.contentN, term) ? 4 : 0);
+  }
+  if (allInName) score += 25;
+  if (q.terms.length > 1) {
+    const joined = q.terms.join(' ');
+    if (item.nameN.includes(joined)) score += 35;
+    if (item.contentN.includes(joined)) score += 15;
+  }
+  // Leve preferencia por lo modificado recientemente (máx. 5 puntos en los últimos 30 días).
+  score += Math.max(0, 5 - (Date.now() - item.mtime) / (6 * 86400000));
+  return { score, matched:[...new Set(matched)] };
+}
+function buildSnippet(item, matched) {
+  if (item.type === 'Vault') return 'Bóveda KeePass cifrada; no se indexa.';
+  if (!matched.length || !item.contentN) return '';
+  let bestPos = -1, bestHits = -1;
+  const firsts = matched.map(t => item.contentN.indexOf(t)).filter(i => i >= 0).sort((a,b) => a - b);
+  for (const pos of firsts.slice(0, 6)) {
+    const win = item.contentN.slice(Math.max(0, pos - 80), pos + 160);
+    const hits = matched.filter(t => win.includes(t)).length;
+    if (hits > bestHits) { bestHits = hits; bestPos = pos; }
+  }
+  if (bestPos < 0) return '';
+  const from = Math.max(0, bestPos - 70), to = Math.min(item.content.length, bestPos + 190);
+  return (from > 0 ? '… ' : '') + item.content.slice(from, to).replace(/\s+/g, ' ').trim() + (to < item.content.length ? ' …' : '');
+}
+function searchLibrary(raw, { category = 'all', type = 'all', sort = 'relevance' } = {}) {
+  const q = parseQuery(raw);
+  const hasQuery = q.terms.length || q.phrases.length || q.exclude.length;
+  const base = [...cache.values()].filter(x =>
+    (category === 'all' || x.category === category) && (type === 'all' || x.type === type) &&
+    (!q.exts.length || q.exts.includes(x.ext)) && (!q.types.length || q.types.includes(x.type)) &&
+    (!q.cats.length || q.cats.some(c => x.catN.startsWith(c))));
+  const run = fuzzy => {
+    const out = [];
+    for (const item of base) {
+      if (!hasQuery) { out.push({ item, score:0, matched:[] }); continue; }
+      const r = scoreItem(item, q, fuzzy);
+      if (r) out.push({ item, ...r });
+    }
+    return out;
+  };
+  let results = run(false), fuzzy = false;
+  if (!results.length && q.terms.length) { results = run(true); fuzzy = results.length > 0; }
+  const byName = (a, b) => a.item.name.localeCompare(b.item.name, 'es');
+  if (sort === 'name' || (sort === 'relevance' && !hasQuery)) results.sort(byName);
+  else if (sort === 'recent') results.sort((a, b) => b.item.mtime - a.item.mtime || byName(a, b));
+  else if (sort === 'size') results.sort((a, b) => b.item.size - a.item.size || byName(a, b));
+  else results.sort((a, b) => b.score - a.score || byName(a, b));
+  return { results, fuzzy, query:q };
+}
 app.get('/api/files', loggedIn, async (req, res) => {
   try {
     await ensureCache();
-    const q = String(req.query.q || '').trim().toLocaleLowerCase();
     const cat = String(req.query.category || 'all'); const type = String(req.query.type || 'all');
+    const sort = ['relevance','name','recent','size'].includes(req.query.sort) ? req.query.sort : 'relevance';
     const everything = [...cache.values()];
     const counts = Object.fromEntries(CATEGORIES.map(c => [c, everything.filter(x => x.category === c).length]));
-    const result = everything.filter(x => (cat === 'all' || x.category === cat) && (type === 'all' || x.type === type) && (!q || (x.name + ' ' + x.rel + ' ' + x.category + ' ' + x.content).toLocaleLowerCase().includes(q)));
-    result.sort((a,b) => a.name.localeCompare(b.name, 'es'));
-    res.json({ files: result.map(x => {
-      const i = q ? x.content.toLocaleLowerCase().indexOf(q) : -1;
-      const snippet = x.type === 'Vault' ? 'Bóveda KeePass cifrada; no se indexa.' : i >= 0 ? x.content.slice(Math.max(0,i-65), i+q.length+105).replace(/\s+/g,' ') : '';
-      return { id:x.id, name:x.name, rel:x.rel, ext:x.ext, type:x.type, category:x.category, size:x.size, snippet, open:`/api/file/${x.id}` };
-    }), indexing, categories:CATEGORIES, counts, stats:{ total:everything.length, topics:Object.values(counts).filter(Boolean).length, sheets:everything.filter(x => x.type === 'Excel').length, indexed:everything.filter(x => x.content).length } });
-  } catch (e) { res.status(500).json({ error: 'No se pudo leer la biblioteca.' }); }
+    const typeCounts = {}; for (const x of everything) typeCounts[x.type] = (typeCounts[x.type] || 0) + 1;
+    const { results, fuzzy } = searchLibrary(req.query.q, { category:cat, type, sort });
+    const highlight = [...new Set(results.slice(0, 200).flatMap(r => r.matched))].slice(0, 20);
+    res.json({ files: results.map(({ item:x, matched, score }) => ({
+      id:x.id, name:x.name, rel:x.rel, ext:x.ext, type:x.type, category:x.category, size:x.size, mtime:x.mtime,
+      snippet: x.type === 'Vault' ? 'Bóveda KeePass cifrada; no se indexa.' : buildSnippet(x, matched), score:Math.round(score), open:`/api/file/${x.id}`
+    })), fuzzy, highlight, indexing, categories:CATEGORIES, counts, typeCounts, stats:{ total:everything.length, topics:Object.values(counts).filter(Boolean).length, sheets:everything.filter(x => x.type === 'Excel').length, indexed:everything.filter(x => x.content).length } });
+  } catch (e) { console.error('Error de búsqueda:', e.message); res.status(500).json({ error: 'No se pudo leer la biblioteca.' }); }
 });
 const EDITABLE_TEXT = new Set(['txt','md','csv','tsv','log','ps1','bat','sh','yml','yaml','conf','ini','json','xml','sql','py','crt','pem']);
 const TELEGRAM_APPENDABLE_TEXT = new Set(['txt','md','csv','tsv','log']);
@@ -566,18 +741,15 @@ async function handleBotMessage(ctx) {
   const query = text.replace(/^\/buscar(?:@\w+)?\s*/i, '').trim();
   if (!query || query.startsWith('/')) return send('Escribí una búsqueda, por ejemplo: backup o §buscar backup.');
   await ensureCache();
-  const terms = normalizeSearch(query).split(/\s+/).filter(Boolean);
-  const all = [...cache.values()];
-  const matches = all.filter(item => {
-    const haystack = normalizeSearch(`${item.name} ${item.rel} ${item.category} ${item.content}`);
-    return terms.every(term => haystack.includes(term));
-  }).sort((a, b) => a.name.localeCompare(b.name, 'es')).slice(0, 10);
+  const { results: found, fuzzy } = searchLibrary(query);
+  const matches = found.slice(0, 10).map(r => r.item);
   if (!matches.length) {
     return send(indexing ? 'Todavía estoy leyendo los documentos. Esperá unos segundos y repetí la búsqueda.' : 'No encontré archivos que coincidan con esa búsqueda.');
   }
   telegramChoices.set(key, { items: matches.map(({id}) => ({id})), expires: Date.now() + 10 * 60 * 1000 });
   const list = matches.map((item, index) => `${index + 1}. ${item.name}`).join('\n');
-  return send(`Encontré ${matches.length} coincidencia${matches.length === 1 ? '' : 's'} para “${query}”:\n\n${list}\n\nRespondé con el número para ver su contenido.`);
+  const header = fuzzy ? `No encontré “${query}” exacto; estos son los resultados más parecidos` : `Encontré ${found.length} coincidencia${found.length === 1 ? '' : 's'} para “${query}”${found.length > 10 ? ' (muestro las 10 más relevantes)' : ''}`;
+  return send(`${header}:\n\n${list}\n\nRespondé con el número para ver su contenido.`);
 }
 async function telegramDownload(fileId) {
   const file = await telegramCall('getFile', { file_id: fileId });

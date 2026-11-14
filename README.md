@@ -26,6 +26,23 @@ Aplicación web privada para subir documentos, buscar dentro de TXT, Word (.docx
 5. El puerto se publica como `${APP_PORT:-9090}` para acceder desde otras PCs de la red local usando `http://IP-DEL-SERVIDOR:9090`. El valor predeterminado `COOKIE_SECURE=0` permite iniciar sesión por HTTP durante pruebas en una red confiable. Para usar un proxy inverso con HTTPS, configurá `COOKIE_SECURE=1` y reenviá al puerto del servidor. No expongas el puerto directamente a Internet; para acceso remoto usá HTTPS y VPN.
 6. En la web, iniciá sesión y cargá archivos o una carpeta completa. La biblioteca aparece primero y el índice de búsqueda se completa en segundo plano. Al subir una carpeta, la aplicación sugiere categorías usando nombres y subcarpetas; también podés elegir una categoría manualmente. Cada archivo puede pesar hasta 100 MB.
 
+## Búsqueda
+
+La búsqueda (web y bots) ignora acentos y mayúsculas, ordena por relevancia (primero coincidencias en el nombre, después en la ruta y en el contenido) y, si no hay coincidencias exactas, muestra los resultados más parecidos para tolerar errores de tipeo.
+
+| Escribí | Resultado |
+|---|---|
+| `backup nas` | Archivos que contienen todas las palabras |
+| `"backup diario"` | Frase exacta |
+| `backup -erp` | Excluye archivos que contienen “erp” |
+| `tipo:pdf` | Filtra por formato: pdf, word, excel, texto, keepass |
+| `ext:ps1` | Filtra por extensión |
+| `cat:proced` | Filtra por categoría |
+
+En la web: `/` o `Ctrl+K` enfoca el buscador, `↑ ↓` recorre resultados, `Enter` abre la vista previa y `Esc` cierra ventanas. Dentro de la vista previa, `Ctrl+F` busca en el archivo y `Ctrl+S` guarda al editar. La búsqueda queda en la dirección del navegador, así que se puede recargar o guardar como favorito.
+
+El texto extraído se conserva en memoria y solo se vuelve a leer un archivo cuando cambia su fecha o tamaño; las búsquedas son más rápidas con bibliotecas grandes.
+
 ## Bot de Telegram (opcional)
 
 1. En Portainer, agregá `TELEGRAM_BOT_TOKEN` con el token de BotFather y dejá `TELEGRAM_ALLOWED_USERS` vacío por ahora. Redeplegá el Stack.
