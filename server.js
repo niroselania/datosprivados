@@ -166,11 +166,163 @@ const upload = multer({ storage, limits: { fileSize: MAX_MB * 1024 * 1024, files
   const accepted = !ext || ALLOWED.has(ext);
   cb(accepted ? null : new Error('Formato no admitido: ' + ext), accepted);
 } });
-app.post('/api/upload', loggedIn, (req, res) => upload.array('files', 100)(req, res, err => {
+// ---- Detección de archivos repetidos ----
+// Un archivo se considera repetido si tiene el mismo nombre original o exactamente el mismo contenido (SHA-256).
+const hashStore = new Map(); // ruta -> { mtime, size, hash }
+const STAMP_RE = /__[0-9TZ-]+_[a-f0-9]{6}(?=\.|$)/;
+const originalNameOf = abs => path.basename(abs).replace(STAMP_RE, '');
+const nameKey = name => foldKeep(String(name || '').trim());
+const idFor = abs => crypto.createHash('sha256').update(abs).digest('hex');
+function hashStream(abs) {
+  return new Promise((resolve, reject) => {
+    const h = crypto.createHash('sha256');
+    fs.createReadStream(abs).on('error', reject).on('data', d => h.update(d)).on('end', () => resolve(h.digest('hex')));
+  });
+}
+async function fileHash(entry) {
+  const known = hashStore.get(entry.abs);
+  if (known && known.mtime === entry.mtime && known.size === entry.size) return known.hash;
+  try {
+    const hash = await hashStream(entry.abs);
+    hashStore.set(entry.abs, { mtime:entry.mtime, size:entry.size, hash });
+    return hash;
+  } catch { return null; }
+}
+async function libraryEntries(exclude = new Set()) {
+  const out = [];
+  for (const abs of await walk(DATA)) {
+    if (exclude.has(abs) || abs.endsWith('.tmp')) continue;
+    let stat; try { stat = await fs.promises.stat(abs); } catch { continue; }
+    const rel = path.relative(DATA, abs);
+    const name = originalNameOf(abs);
+    out.push({ abs, rel, name, size:stat.size, mtime:stat.mtimeMs, category: categoryFor(rel) === 'Otros' ? categoryGuess(rel) : categoryFor(rel) });
+  }
+  const alive = new Set(out.map(e => e.abs));
+  for (const abs of hashStore.keys()) if (!alive.has(abs) && !exclude.has(abs)) hashStore.delete(abs);
+  return out;
+}
+const publicEntry = e => ({ id:idFor(e.abs), name:e.name, rel:e.rel, category:e.category, size:e.size, mtime:e.mtime });
+// Busca en la biblioteca coincidencias por nombre o por contenido idéntico.
+async function findMatches(existing, { name, size, hash }) {
+  const nk = nameKey(name), matches = [];
+  for (const e of existing) {
+    const sameName = nameKey(e.name) === nk;
+    const identical = Boolean(hash) && e.size === size && (await fileHash(e)) === hash;
+    if (sameName || identical) matches.push({ entry:e, identical });
+  }
+  return matches;
+}
+async function removeFromLibrary(abs) {
+  await fs.promises.rm(abs, { force:true });
+  hashStore.delete(abs); contentStore.delete(abs); cache.delete(abs);
+}
+// Modos: skipIdentical (por defecto: omite solo contenido idéntico), skip (omite cualquier repetido),
+// overwrite (reemplaza los existentes por el nuevo) y keep (guarda todo igual).
+const DUP_MODES = new Set(['skipIdentical', 'skip', 'overwrite', 'keep']);
+async function resolveUploadDuplicates(files, mode) {
+  const newPaths = files.map(f => path.resolve(f.path));
+  const existing = await libraryEntries(new Set(newPaths));
+  const result = { added:[], skipped:[], replaced:[], warned:[] };
+  for (const abs of newPaths) {
+    let stat; try { stat = await fs.promises.stat(abs); } catch { continue; }
+    const rel = path.relative(DATA, abs);
+    const entry = { abs, rel, name:originalNameOf(abs), size:stat.size, mtime:stat.mtimeMs, category: categoryFor(rel) };
+    const hash = await fileHash(entry);
+    const matches = await findMatches(existing, { name:entry.name, size:entry.size, hash });
+    const identical = matches.some(m => m.identical);
+    const where = matches.map(m => m.entry.rel);
+    if (matches.length && (mode === 'skip' || (mode === 'skipIdentical' && identical))) {
+      await removeFromLibrary(abs);
+      result.skipped.push({ name:entry.name, identical, matches:where });
+      continue;
+    }
+    if (matches.length && mode === 'overwrite') {
+      for (const { entry:old } of matches) {
+        await removeFromLibrary(old.abs);
+        existing.splice(existing.indexOf(old), 1);
+      }
+      result.replaced.push({ name:entry.name, removed:where });
+    } else if (matches.length) result.warned.push({ name:entry.name, identical, matches:where });
+    existing.push(entry);
+    result.added.push(entry.name);
+  }
+  return result;
+}
+app.post('/api/upload/check', loggedIn, async (req, res) => {
+  const list = Array.isArray(req.body?.files) ? req.body.files.slice(0, 100) : null;
+  if (!list) return res.status(400).json({ error:'Lista de archivos inválida.' });
+  try {
+    const existing = await libraryEntries();
+    const duplicates = [];
+    for (let index = 0; index < list.length; index++) {
+      const f = list[index] || {};
+      const name = path.basename(String(f.name || '')).slice(0, 200);
+      const size = Number(f.size) || 0;
+      const hash = /^[a-f0-9]{64}$/.test(String(f.hash || '')) ? String(f.hash) : null;
+      if (!name) continue;
+      const matches = await findMatches(existing, { name, size, hash });
+      if (matches.length) duplicates.push({ index, name, identical:matches.some(m => m.identical), matches:matches.map(m => ({ ...publicEntry(m.entry), identical:m.identical })) });
+    }
+    res.json({ duplicates });
+  } catch (e) { console.error('Error al revisar repetidos:', e.message); res.status(500).json({ error:'No se pudo revisar si hay archivos repetidos.' }); }
+});
+app.post('/api/upload', loggedIn, (req, res) => upload.array('files', 100)(req, res, async err => {
   if (err) return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? `Cada archivo puede pesar hasta ${MAX_MB} MB.` : err.message });
-  cacheAt = 0;
-  res.json({ ok: true, count: (req.files || []).length });
+  const mode = DUP_MODES.has(req.body.duplicateMode) ? req.body.duplicateMode : 'skipIdentical';
+  try {
+    const r = await resolveUploadDuplicates(req.files || [], mode);
+    cacheAt = 0;
+    res.json({ ok: true, count: r.added.length, skipped: r.skipped, replaced: r.replaced, warned: r.warned });
+  } catch (e) {
+    console.error('Error al procesar repetidos:', e.message);
+    cacheAt = 0;
+    res.json({ ok: true, count: (req.files || []).length, skipped: [], replaced: [], warned: [], note: 'Los archivos se subieron, pero no se pudo revisar si había repetidos.' });
+  }
 }));
+// Lista los grupos de archivos repetidos que ya están en la biblioteca.
+app.get('/api/duplicates', loggedIn, async (req, res) => {
+  try {
+    const entries = await libraryEntries();
+    const bySize = new Map();
+    for (const e of entries) { if (!bySize.has(e.size)) bySize.set(e.size, []); bySize.get(e.size).push(e); }
+    for (const group of bySize.values()) if (group.length > 1) for (const e of group) e.hash = await fileHash(e);
+    const byHash = new Map();
+    for (const e of entries) if (e.hash) { if (!byHash.has(e.hash)) byHash.set(e.hash, []); byHash.get(e.hash).push(e); }
+    const identical = [...byHash.values()].filter(g => g.length > 1);
+    const inIdentical = new Map(); identical.forEach((g, i) => g.forEach(e => inIdentical.set(e.abs, i)));
+    const byName = new Map();
+    for (const e of entries) { const k = nameKey(e.name); if (!byName.has(k)) byName.set(k, []); byName.get(k).push(e); }
+    // Mismo nombre con contenido distinto (si todos son idénticos ya aparecen en el otro grupo).
+    const sameName = [...byName.values()].filter(g => g.length > 1 && new Set(g.map(e => inIdentical.has(e.abs) ? 'g' + inIdentical.get(e.abs) : e.abs)).size > 1);
+    const sortOld = g => g.sort((a, b) => a.mtime - b.mtime).map(publicEntry);
+    const wasted = identical.reduce((t, g) => t + g[0].size * (g.length - 1), 0);
+    res.json({ identical: identical.map(sortOld), sameName: sameName.map(sortOld), wasted });
+  } catch (e) { console.error('Error al buscar repetidos:', e.message); res.status(500).json({ error:'No se pudieron buscar los archivos repetidos.' }); }
+});
+// Elimina varios archivos a la vez; siempre conserva al menos una copia de cada grupo.
+app.post('/api/duplicates/delete', loggedIn, async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? new Set(req.body.ids.map(String).slice(0, 2000)) : null;
+  if (!ids || !ids.size) return res.status(400).json({ error:'No hay archivos seleccionados.' });
+  try {
+    const entries = await libraryEntries();
+    const targets = entries.filter(e => ids.has(idFor(e.abs)));
+    const keep = entries.filter(e => !ids.has(idFor(e.abs)));
+    const keepNames = new Set(keep.map(e => nameKey(e.name)));
+    const keepSizes = new Set(keep.map(e => e.size));
+    let deleted = 0; const refused = [];
+    for (const e of targets) {
+      let safe = keepNames.has(nameKey(e.name));
+      if (!safe && keepSizes.has(e.size)) {
+        const h = await fileHash(e);
+        for (const k of keep) if (k.size === e.size && h && (await fileHash(k)) === h) { safe = true; break; }
+      }
+      if (!safe) { refused.push(e.name); continue; }
+      await removeFromLibrary(e.abs); deleted++;
+    }
+    cacheAt = 0;
+    res.json({ ok:true, deleted, refused });
+  } catch (e) { console.error('Error al eliminar repetidos:', e.message); cacheAt = 0; res.status(500).json({ error:'No se pudieron eliminar los repetidos.' }); }
+});
 
 function categoryFor(rel) { return CATEGORIES.find(c => rel.split(path.sep)[0] === c) || 'Otros'; }
 function fileType(ext) {
