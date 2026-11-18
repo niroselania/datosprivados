@@ -88,18 +88,6 @@ Usá una salida para `SESSION_SECRET`; creá una contraseña distinta para `APP_
 
 No subas archivos `.env`, `stack.env` ni credenciales al repositorio. `.gitignore` excluye formatos de credenciales, documentos y datos habituales; verificá los archivos del repositorio antes de hacerlo público.
 
-## Archivos repetidos
-
-**Al subir:** antes de subir, la app revisa si cada archivo ya existe en la biblioteca (mismo nombre o exactamente el mismo contenido) o si se repite dentro de la misma carga. Si encuentra repetidos, muestra la lista y deja elegir:
-
-- **Omitir repetidos:** no sube los repetidos; el resto se sube normalmente.
-- **Reemplazar existentes:** borra las copias que ya estaban y deja la versión nueva.
-- **Subir igual:** guarda una copia más, como antes.
-
-Si no se pidió ninguna opción, el servidor igual descarta las copias con contenido idéntico y lo avisa en el mensaje final.
-
-**Limpiar lo que ya está subido:** el botón **⧉ Repetidos** (al lado de “Agregar”) lista los grupos de archivos con contenido idéntico (por defecto se conserva la copia más antigua) y los grupos con el mismo nombre pero distinto contenido (por defecto se conservan todos). Elegí qué copia conservar en cada grupo y tocá **Eliminar**. El servidor nunca borra la última copia de un contenido.
-
 ## Datos y límites
 
 - El volumen Docker contiene los documentos cargados y debe incluirse en tu estrategia de copias de seguridad cifradas.

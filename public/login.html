@@ -1,20 +1,145 @@
-<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>Archivo IT · Ingresar</title>
-<script>(()=>{const t=localStorage.getItem('aitTheme');document.documentElement.dataset.theme=t||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light')})()</script>
+<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>Archivo IT · Ingresar</title>
 <style>
-:root{--bg:#f3f5f1;--paper:#fff;--ink:#1d2620;--muted:#738077;--line:#e3e8e1;--field:#fafbf9;--green:#22694c;--green2:#2f8a63;--ring:0 0 0 3px #22694c26;--err:#ad3a2f}
-[data-theme=dark]{--bg:#0f1512;--paper:#161e1a;--ink:#e6ece8;--muted:#8d9a92;--line:#27322c;--field:#1b2420;--green:#4fbf8b;--green2:#6fd3a3;--ring:0 0 0 3px #4fbf8b33;--err:#ff8f86}
-*{box-sizing:border-box}html{background:var(--bg)}body{margin:0;min-height:100vh;background-attachment:fixed!important;display:grid;place-items:center;background:radial-gradient(1200px 600px at 10% -10%,#22694c22,transparent),radial-gradient(900px 500px at 110% 110%,#2f8a6322,transparent),var(--bg);color:var(--ink);font:15px/1.5 "Segoe UI",system-ui,-apple-system,Arial,sans-serif}
-.card{width:min(420px,calc(100% - 32px));padding:34px;background:var(--paper);border:1px solid var(--line);border-radius:24px;box-shadow:0 24px 70px #1d262018;}
-.brand{display:flex;gap:12px;align-items:center;margin-bottom:26px}.logo{height:46px;width:46px;display:grid;place-items:center;color:#fff;background:linear-gradient(135deg,var(--green),var(--green2));border-radius:14px;font-weight:800;box-shadow:0 6px 18px #22694c40}.eyebrow{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--muted);font-weight:700}.brand h1{font-size:23px;margin:2px 0 0;letter-spacing:-.03em}
-.card h2{font-size:20px;margin:0 0 5px}.card p{color:var(--muted);margin:0 0 20px;font-size:14px}
-label{display:block;font-size:13px;font-weight:650;margin:14px 0 6px}.field{position:relative}
-input{width:100%;padding:12px 13px;border:1.5px solid var(--line);border-radius:11px;font:inherit;color:inherit;background:var(--field);outline:none;transition:border-color .15s,box-shadow .15s}input:focus{border-color:var(--green);box-shadow:var(--ring)}
-.toggle{position:absolute;right:8px;top:50%;transform:translateY(-50%);border:0;background:transparent;color:var(--muted);font-size:12px;font-weight:650;padding:6px 8px;border-radius:7px;cursor:pointer}.toggle:hover{color:var(--green)}
-.caps{font-size:12px;color:#b07a00;margin-top:6px}
-button.go{width:100%;padding:13px;border:0;border-radius:11px;background:var(--green);color:#fff;font:inherit;font-weight:700;cursor:pointer;margin-top:22px;transition:transform .12s}[data-theme=dark] button.go{color:#0d1a13}button.go:hover{transform:translateY(-1px)}button.go:disabled{opacity:.65;transform:none}
-#msg{min-height:20px;color:var(--err);font-size:13px;margin-top:10px}.private{font-size:12px;color:var(--muted);background:var(--field);border:1px solid var(--line);border-radius:11px;padding:11px 12px;margin-top:8px}.hidden{display:none}
-</style></head><body><main class="card"><div class="brand"><div class="logo">IT</div><div><div class="eyebrow">Biblioteca privada</div><h1>Archivo IT</h1></div></div><h2>Iniciá sesión</h2><p>Ingresá con el usuario y la contraseña configurados en Portainer.</p><form id="form"><label for="username">Usuario</label><input id="username" name="username" autocomplete="username" required autofocus><label for="password">Contraseña</label><div class="field"><input id="password" name="password" type="password" autocomplete="current-password" required style="padding-right:74px"><button type="button" class="toggle" id="toggle" aria-label="Mostrar contraseña">Mostrar</button></div><div id="caps" class="caps hidden">⇪ Bloq Mayús está activado</div><button class="go" type="submit">Ingresar</button><div id="msg" role="status"></div></form><div class="private">🔒 Acceso privado. Mantené el sitio detrás de HTTPS y compartilo solo por VPN o una red confiable.</div></main><script>
+:root{--bg:#0b0807;--ink:#f3e9dc;--muted:#9a8b7b;--line:#ffffff14;--field:#ffffff08;--amber:#f2a65a;--amber2:#ffcf8a;--err:#ff9d8f;--ring:0 0 0 3px #f2a65a33;--warm:0}
+*{box-sizing:border-box}html,body{height:100%}
+body{margin:0;min-height:100vh;overflow-x:hidden;color:var(--ink);background:var(--bg);font:15px/1.5 "Segoe UI",system-ui,-apple-system,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+/* Habitación: se calienta cuando la lámpara se enciende */
+.room{position:fixed;inset:0;pointer-events:none;background:radial-gradient(900px 700px at 26% 30%,#6b3c1a,transparent 70%),radial-gradient(1200px 500px at 30% 100%,#3a2010,transparent 70%),linear-gradient(#1a100b,#0b0807);opacity:0;transition:opacity 1.1s ease}
+body.on .room{opacity:1}
+.vignette{position:fixed;inset:0;pointer-events:none;background:radial-gradient(ellipse at 40% 45%,transparent 35%,#000a 100%)}
+.studio{position:fixed;top:20px;left:26px;font-size:11px;letter-spacing:.32em;text-transform:uppercase;color:#ffffff40;font-weight:600;z-index:3}
+.scene{position:relative;z-index:2;min-height:100vh;display:grid;grid-template-columns:1fr minmax(320px,440px);align-items:center;gap:40px;max-width:1180px;margin:auto;padding:40px 48px}
+/* Lámpara */
+.lampwrap{position:relative;height:min(640px,86vh);display:flex;justify-content:center}
+.lamp{position:relative;height:100%;aspect-ratio:300/640}
+.lamp svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.cone{position:absolute;left:50%;top:22.5%;width:1500px;height:120vh;transform:translateX(-50%);clip-path:polygon(47% 0,53% 0,100% 82%,0 82%);background:linear-gradient(#ffc27a55,#ffb26a22 40%,transparent 80%);opacity:0;transition:opacity .9s ease;pointer-events:none;filter:blur(2px)}
+body.on .cone{opacity:1}
+.shade-glow{opacity:0;transition:opacity .6s ease}body.on .shade-glow{opacity:1}
+.shade-dark{transition:opacity .6s ease}body.on .shade-dark{opacity:0}
+.bulb{fill:#3a332c;transition:fill .4s ease,filter .4s ease}body.on .bulb{fill:#fff1cf;filter:drop-shadow(0 0 14px #ffd28a) drop-shadow(0 0 40px #ffb366)}
+.halo{opacity:0;transition:opacity .8s ease}body.on .halo{opacity:1}
+.floor{opacity:.25;transition:opacity .8s ease}body.on .floor{opacity:1}
+/* Cordón */
+.cord{position:absolute;left:68.3%;top:22.2%;width:44px;margin-left:-22px;height:calc(28% + 40px);cursor:grab;touch-action:none;background:none;border:0;padding:0;border-radius:12px}
+.cord:active{cursor:grabbing}.cord:focus-visible{outline:none;box-shadow:var(--ring)}
+.cord svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.hint{position:absolute;left:calc(68.3% + 34px);top:calc(50% + 6px);white-space:nowrap;font-size:11px;letter-spacing:.24em;text-transform:uppercase;color:#ffffff55;display:flex;align-items:center;gap:10px;pointer-events:none;transition:color .6s}
+.hint:before{content:"";width:26px;height:1px;background:currentColor}
+body.on .hint{color:#ffffff38}
+.dust{position:absolute;inset:0;pointer-events:none;opacity:0;transition:opacity 1s}body.on .dust{opacity:1}
+.dust i{position:absolute;width:2px;height:2px;border-radius:50%;background:#ffd9a8;opacity:.0;animation:float 9s linear infinite}
+@keyframes float{0%{transform:translate(0,0);opacity:0}15%{opacity:.7}85%{opacity:.5}100%{transform:translate(30px,-140px);opacity:0}}
+/* Tarjeta de acceso */
+.card{position:relative;padding:34px 34px 26px;border-radius:22px;background:linear-gradient(#1e1612e6,#140f0ce6);border:1px solid var(--line);box-shadow:0 30px 80px #000a,inset 0 1px 0 #ffffff0d;backdrop-filter:blur(10px);opacity:0;transform:translateX(28px) scale(.98);filter:blur(6px);visibility:hidden;transition:opacity .8s ease .25s,transform .8s cubic-bezier(.2,.8,.2,1) .25s,filter .8s ease .25s,visibility 0s linear 1.05s}
+body.on .card{opacity:1;transform:none;filter:none;visibility:visible;transition-delay:.35s,.35s,.35s,0s}
+.eyebrow{font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--amber);opacity:.75;font-weight:700}
+.card h1{font:400 40px/1.08 Georgia,"Times New Roman",serif;letter-spacing:-.02em;margin:10px 0 22px}.card h1 em{display:block;color:#ffffffa0}
+label{display:block;font-size:11px;letter-spacing:.16em;text-transform:uppercase;font-weight:650;color:var(--muted);margin:16px 0 7px}
+.field{position:relative}.field .ico{position:absolute;left:14px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:14px;pointer-events:none}
+input{width:100%;padding:13px 14px 13px 38px;border:1px solid var(--line);border-radius:12px;font:inherit;color:inherit;background:var(--field);outline:none;transition:border-color .15s,box-shadow .15s,background .15s}
+input:focus{border-color:#f2a65a99;box-shadow:var(--ring);background:#ffffff0c}input::placeholder{color:#ffffff40}
+.toggle{position:absolute;right:8px;top:50%;transform:translateY(-50%);border:0;background:transparent;color:var(--muted);font-size:11px;letter-spacing:.12em;text-transform:uppercase;font-weight:700;padding:6px 8px;border-radius:7px;cursor:pointer}.toggle:hover{color:var(--amber2)}
+.caps{font-size:12px;color:#e7b25a;margin-top:6px}
+button.go{width:100%;padding:14px;border:0;border-radius:12px;background:linear-gradient(#ffc27a,#ec9440);color:#2a1606;font:inherit;font-weight:700;cursor:pointer;margin-top:24px;box-shadow:0 10px 30px #f2a65a40,inset 0 1px 0 #fff6;transition:transform .12s,box-shadow .2s}
+button.go:hover{transform:translateY(-1px);box-shadow:0 14px 36px #f2a65a55,inset 0 1px 0 #fff6}button.go:disabled{opacity:.65;transform:none}
+#msg{min-height:20px;color:var(--err);font-size:13px;margin-top:10px}
+.private{font-size:12px;color:var(--muted);border-top:1px solid var(--line);padding-top:14px;margin-top:8px}.hidden{display:none}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+@media (max-width:860px){.scene{grid-template-columns:minmax(0,1fr);gap:0;padding:56px 16px 30px}.card{padding:28px 22px 22px}.card h1{font-size:30px}.hint{left:50%;top:auto;bottom:-30px;transform:translateX(-50%)}.hint:before{display:none}.lampwrap{height:46vh;min-height:300px}.card{transform:translateY(24px)}body.on .lampwrap{height:34vh}.lampwrap{transition:height .7s ease}.hint{font-size:10px}}
+@media (prefers-reduced-motion:reduce){*,*:before,*:after{transition-duration:.01s!important;animation:none!important}}
+</style></head><body>
+<div class="room"></div><div class="vignette"></div><div class="studio">Archivo IT</div>
+<main class="scene">
+  <div class="lampwrap"><div class="lamp" id="lamp">
+    <div class="cone"></div>
+    <svg viewBox="0 0 300 640" aria-hidden="true">
+      <defs>
+        <linearGradient id="shOff" x1="0" x2="1"><stop offset="0" stop-color="#15110f"/><stop offset=".5" stop-color="#2a221d"/><stop offset="1" stop-color="#110d0b"/></linearGradient>
+        <linearGradient id="shOn" x1="0" x2="1"><stop offset="0" stop-color="#d98c45"/><stop offset=".45" stop-color="#ffd59c"/><stop offset="1" stop-color="#c97a36"/></linearGradient>
+        <linearGradient id="rim" x1="0" x2="1"><stop offset="0" stop-color="#ffcf8a"/><stop offset=".5" stop-color="#fff2d6"/><stop offset="1" stop-color="#ffcf8a"/></linearGradient>
+        <linearGradient id="pole" x1="0" x2="1"><stop offset="0" stop-color="#0d0b0a"/><stop offset=".45" stop-color="#3b322c"/><stop offset="1" stop-color="#0d0b0a"/></linearGradient>
+        <linearGradient id="brass" x1="0" x2="1"><stop offset="0" stop-color="#6b4b22"/><stop offset=".5" stop-color="#c79a55"/><stop offset="1" stop-color="#5a3d1a"/></linearGradient>
+        <radialGradient id="haloG"><stop offset="0" stop-color="#ffd59c" stop-opacity=".55"/><stop offset="1" stop-color="#ffb366" stop-opacity="0"/></radialGradient>
+        <radialGradient id="floorG"><stop offset="0" stop-color="#000" stop-opacity=".7"/><stop offset="1" stop-color="#000" stop-opacity="0"/></radialGradient>
+      </defs>
+      <ellipse class="halo" cx="150" cy="110" rx="190" ry="150" fill="url(#haloG)"/>
+      <ellipse class="floor" cx="150" cy="622" rx="120" ry="14" fill="url(#floorG)"/>
+      <!-- poste -->
+      <rect x="143" y="150" width="14" height="455" rx="4" fill="url(#pole)"/>
+      <rect x="140" y="390" width="20" height="10" rx="2" fill="url(#brass)"/>
+      <rect x="141" y="170" width="18" height="8" rx="2" fill="url(#brass)"/>
+      <!-- base -->
+      <ellipse cx="150" cy="612" rx="62" ry="11" fill="#090706"/>
+      <path d="M92 604h116l8 8H84z" fill="url(#pole)"/>
+      <rect x="138" y="596" width="24" height="10" rx="2" fill="url(#brass)"/>
+      <!-- foco -->
+      <ellipse class="bulb" cx="150" cy="162" rx="17" ry="14"/>
+      <!-- pantalla -->
+      <path class="shade-dark" d="M100 40h100l52 112H48z" fill="url(#shOff)"/>
+      <path class="shade-glow" d="M100 40h100l52 112H48z" fill="url(#shOn)"/>
+      <ellipse class="shade-glow" cx="150" cy="152" rx="102" ry="7" fill="url(#rim)"/>
+      <path d="M100 40h100" stroke="#ffffff22" stroke-width="2"/>
+    </svg>
+    <button class="cord" id="cord" type="button" aria-pressed="false" aria-label="Tirar del cordón para encender la luz">
+      <svg viewBox="0 0 44 200" preserveAspectRatio="none" aria-hidden="true"><path id="cordPath" d="M22 0 L22 160" stroke="#d8c3a0" stroke-width="1.6" fill="none" vector-effect="non-scaling-stroke"/></svg>
+      <span id="knob" style="position:absolute;left:50%;top:0;width:9px;height:16px;margin-left:-4.5px;border-radius:4px 4px 6px 6px;background:linear-gradient(90deg,#8a6a3e,#e0be82,#7a5a30);box-shadow:0 2px 6px #0008"></span>
+    </button>
+    <div class="hint" id="hint">Tirá del cordón</div>
+    <div class="dust" id="dust"></div>
+  </div></div>
+
+  <section class="card" id="card" aria-labelledby="t" inert>
+    <div class="eyebrow">Biblioteca privada · Archivo IT</div>
+    <h1 id="t">Bienvenido de nuevo.<em>Pasá y ponete cómodo.</em></h1>
+    <form id="form">
+      <label for="username">Usuario</label>
+      <div class="field"><span class="ico">👤</span><input id="username" name="username" autocomplete="username" placeholder="tu usuario" required></div>
+      <label for="password">Contraseña</label>
+      <div class="field"><span class="ico">🔒</span><input id="password" name="password" type="password" autocomplete="current-password" placeholder="••••••••••" required style="padding-right:84px"><button type="button" class="toggle" id="toggle" aria-label="Mostrar contraseña">Mostrar</button></div>
+      <div id="caps" class="caps hidden">⇪ Bloq Mayús está activado</div>
+      <button class="go" type="submit">Ingresar</button>
+      <div id="msg" role="status"></div>
+    </form>
+    <div class="private">Acceso privado. Mantené el sitio detrás de HTTPS y compartilo solo por VPN o una red confiable.</div>
+  </section>
+</main>
+<p class="sr" aria-live="polite" id="live"></p>
+<script>
+(()=>{
+const body=document.body,cord=document.querySelector('#cord'),path=document.querySelector('#cordPath'),knob=document.querySelector('#knob'),
+hint=document.querySelector('#hint'),card=document.querySelector('#card'),live=document.querySelector('#live'),user=document.querySelector('#username');
+const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+// partículas de polvo dentro del haz de luz
+const dust=document.querySelector('#dust');for(let i=0;i<26;i++){const d=document.createElement('i');d.style.left=(30+Math.random()*80)+'%';d.style.top=(30+Math.random()*60)+'%';d.style.animationDelay=(-Math.random()*9)+'s';d.style.animationDuration=(7+Math.random()*6)+'s';dust.appendChild(d)}
+// geometría del cordón (en unidades del viewBox 44x200)
+const REST=160,MAX=60;let pull=0,raf=0;
+function draw(p,sway){const end=REST+p,cx=22+(sway||0);path.setAttribute('d',`M22 0 Q${22+(sway||0)*.5} ${end/2} ${cx} ${end}`);
+  const h=cord.clientHeight||1;knob.style.top=(end/200*h-2)+'px';knob.style.transform=`translateX(${(sway||0)*cord.clientWidth/44}px)`}
+draw(0);addEventListener('resize',()=>draw(pull));
+function spring(from){cancelAnimationFrame(raf);if(reduce){pull=0;draw(0);return}let t=0;const step=()=>{t+=1/60;const p=from*Math.exp(-6*t)*Math.cos(14*t),s=6*Math.exp(-3*t)*Math.sin(9*t);pull=p;draw(p,s);if(t<1.6)raf=requestAnimationFrame(step);else{pull=0;draw(0)}};step()}
+function setLamp(on){body.classList.toggle('on',on);cord.setAttribute('aria-pressed',on);cord.setAttribute('aria-label',on?'Tirar del cordón para apagar la luz':'Tirar del cordón para encender la luz');
+  hint.textContent=on?'Tirá de nuevo para apagar':'Tirá del cordón';
+  if(on){card.removeAttribute('inert');setTimeout(()=>user.focus({preventScroll:true}),reduce?0:700)}else card.setAttribute('inert','');
+  live.textContent=on?'Luz encendida. Formulario de acceso visible.':'Luz apagada.';try{sessionStorage.setItem('aitLamp',on?'1':'0')}catch{}}
+const toggle=()=>setLamp(!body.classList.contains('on'));
+// arrastre con mouse o dedo
+let startY=null,moved=false;
+cord.addEventListener('pointerdown',e=>{startY=e.clientY;moved=false;cancelAnimationFrame(raf);cord.setPointerCapture(e.pointerId)});
+cord.addEventListener('pointermove',e=>{if(startY===null)return;const dy=e.clientY-startY;if(Math.abs(dy)>3)moved=true;const scale=200/(cord.clientHeight||200);pull=Math.max(0,Math.min(MAX,dy*scale*.8));draw(pull)});
+const release=()=>{if(startY===null)return;startY=null;const p=pull;if(!moved||p>MAX*.35)toggle();spring(Math.max(p,moved?p:MAX*.6))};
+cord.addEventListener('pointerup',release);cord.addEventListener('pointercancel',release);
+cord.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();toggle();spring(MAX*.6)}});
+cord.addEventListener('click',e=>{if(e.detail===0){}}); // el teclado se maneja en keydown
+// atajo: cualquier tecla con la luz apagada (excepto Tab) la enciende; Esc la apaga si el formulario está vacío
+addEventListener('keydown',e=>{if(e.target===cord)return;const on=body.classList.contains('on');
+  if(!on&&e.key!=='Tab'&&!e.metaKey&&!e.ctrlKey&&!e.altKey&&e.key.length===1){toggle();spring(MAX*.6)}});
+// si ya la encendió en esta pestaña (p. ej. tras un error), mantenerla encendida
+try{if(sessionStorage.getItem('aitLamp')==='1')setLamp(true)}catch{}
+if(!body.classList.contains('on'))setTimeout(()=>{if(!body.classList.contains('on'))spring(MAX*.25)},1400); // pequeño balanceo como invitación
+})();
+// --- lógica original de inicio de sesión ---
 const pw=document.querySelector('#password');document.querySelector('#toggle').onclick=e=>{const show=pw.type==='password';pw.type=show?'text':'password';e.target.textContent=show?'Ocultar':'Mostrar';pw.focus()};
 pw.addEventListener('keyup',e=>document.querySelector('#caps').classList.toggle('hidden',!(e.getModifierState&&e.getModifierState('CapsLock'))));
-document.querySelector('#form').addEventListener('submit',async e=>{e.preventDefault();let b=e.target.querySelector('button.go'),msg=document.querySelector('#msg');b.disabled=true;b.textContent='Verificando…';msg.textContent='';try{let r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:e.target.username.value,password:e.target.password.value})});let d=await r.json().catch(()=>({}));if(r.status===429)throw Error('Demasiados intentos. Esperá unos minutos y volvé a probar.');if(!r.ok)throw Error(d.error||'No se pudo ingresar.');location.href='/'+location.search}catch(err){msg.textContent=err.message;pw.select()}finally{b.disabled=false;b.textContent='Ingresar'}});
+document.querySelector('#form').addEventListener('submit',async e=>{e.preventDefault();let b=e.target.querySelector('button.go'),msg=document.querySelector('#msg');b.disabled=true;b.textContent='Verificando…';msg.textContent='';try{let r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:e.target.username.value,password:e.target.password.value})});let d=await r.json().catch(()=>({}));if(r.status===429)throw Error('Demasiados intentos. Esperá unos minutos y volvé a probar.');if(!r.ok)throw Error(d.error||'No se pudo ingresar.');try{sessionStorage.removeItem('aitLamp')}catch{}location.href='/'+location.search}catch(err){msg.textContent=err.message;pw.select()}finally{b.disabled=false;b.textContent='Ingresar'}});
 </script></body></html>
