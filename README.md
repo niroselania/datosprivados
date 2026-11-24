@@ -50,6 +50,16 @@ El texto extraído se conserva en memoria y solo se vuelve a leer un archivo cua
 3. En Portainer, agregá ese ID en `TELEGRAM_ALLOWED_USERS` y redeplegá. Para más usuarios, separá los IDs con comas. No compartas el token ni lo subas al repositorio.
 4. En el chat privado, escribí `backup` o `/buscar backup`. El bot lista hasta 10 coincidencias por nombre o contenido. Respondé con el número para recibir el texto extraído. Para agregar información, enviá `/agregar` para elegir entre los primeros 10 archivos, o `/agregar backup` para buscar archivos por nombre. Elegí uno, mandá el texto, revisá la vista previa y confirmá con `/confirmar`; `/cancelar` descarta la operación. Las opciones y confirmaciones vencen a los 10 minutos.
 
+## Subir archivos desde el bot
+
+Además de buscar, el bot de Telegram (y el de Discord, por mensaje directo) permite **subir archivos** a la biblioteca, igual que desde la web:
+
+1. Mandale el archivo como **documento** (en Telegram: 📎 › Archivo). Si lo mandás como foto, Telegram lo comprime y no se guarda como documento.
+2. El bot pregunta la categoría: respondé con el número (1 Credenciales, 2 Comandos y scripts, 3 Procedimientos, 4 Planillas, 5 Otros, 6 Sugerir automáticamente) o escribí el nombre. Si en el comentario del archivo ponés la categoría (por ejemplo `procedimientos` o `auto`), se guarda directo sin preguntar.
+3. Podés mandar varios archivos seguidos: se juntan (hasta 20) y se guardan todos en la categoría que elijas. Con *Sugerir automáticamente*, cada archivo va a la categoría que corresponda según su nombre.
+
+Solo pueden subir los usuarios autorizados (`TELEGRAM_ALLOWED_USERS` / `DISCORD_ALLOWED_USERS`). Se aceptan los mismos formatos que en la web, hasta **20 MB** por archivo (límite de Telegram para bots); para archivos más grandes usá la web. `/cancelar` descarta los archivos pendientes. El pedido de categoría vence a los 10 minutos.
+
 ## Bot de Discord (opcional)
 
 Funciona igual que el de Telegram (misma búsqueda, mismo `agregar` con confirmación) y puede usarse en paralelo. Atiende **solo mensajes directos** y solo IDs autorizados; en canales de servidores no responde.
